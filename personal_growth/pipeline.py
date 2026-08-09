@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date
 from pathlib import Path
@@ -117,10 +118,15 @@ class Pipeline:
         analyzer = ArkAnalyzer(self.http)
 
         def evaluate(article: Article) -> tuple[Article, dict | None, str]:
-            try:
-                return article, analyzer.analyze(article), ""
-            except Exception as exc:
-                return article, None, str(exc)
+            last_error = ""
+            for attempt in range(3):
+                try:
+                    return article, analyzer.analyze(article), ""
+                except Exception as exc:
+                    last_error = str(exc)
+                    if attempt < 2:
+                        time.sleep(1.5 * (2**attempt))
+            return article, None, last_error
 
         valuable: list[Article] = []
         workers = min(int(os.environ.get("AI_WORKERS", "4")), max(1, len(articles)))
