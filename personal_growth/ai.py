@@ -23,7 +23,7 @@ class ArkAnalyzer:
     def __init__(self, http: HttpClient) -> None:
         self.http = http
         self.api_key = os.environ.get("ARK_API_KEY", "")
-        self.model = os.environ.get("ARK_MODEL", "doubao-seed-2-0-mini-260428")
+        self.model = os.environ.get("ARK_MODEL", "doubao-seed-2-0-mini-260215")
         self.url = "https://ark.cn-beijing.volces.com/api/v3/chat/completions"
         if not self.api_key:
             raise RuntimeError("缺少 ARK_API_KEY")

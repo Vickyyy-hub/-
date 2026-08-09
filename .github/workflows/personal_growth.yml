@@ -40,7 +40,7 @@ jobs:
       ARK_API_KEY: ${{ secrets.ARK_API_KEY }}
       FEISHU_APP_ID: ${{ secrets.FEISHU_APP_ID }}
       FEISHU_APP_SECRET: ${{ secrets.FEISHU_APP_SECRET }}
-      ARK_MODEL: doubao-seed-2-0-mini-260428
+      ARK_MODEL: doubao-seed-2-0-mini-260215
       PYTHONUNBUFFERED: "1"
     steps:
       - name: 拉取代码

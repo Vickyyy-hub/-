@@ -20,7 +20,7 @@
 - `FEISHU_APP_ID`
 - `FEISHU_APP_SECRET`
 
-可选变量：`ARK_MODEL`，默认 `doubao-seed-2-0-mini-260428`。
+可选变量：`ARK_MODEL`，默认 `doubao-seed-2-0-mini-260215`。
 
 ## 本地命令
 
