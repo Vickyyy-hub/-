@@ -1,0 +1,93 @@
+name: 个人成长六站每日资讯
+
+on:
+  schedule:
+    - cron: "0 0 * * *"
+  workflow_dispatch:
+    inputs:
+      target_date:
+        description: "处理日期（北京时间 YYYY-MM-DD；留空为前一日）"
+        required: false
+        type: string
+      sources:
+        description: "all 或逗号分隔的来源键"
+        required: false
+        default: "all"
+        type: string
+      dry_run:
+        description: "运行AI但不写飞书"
+        required: false
+        default: false
+        type: boolean
+      collect_only:
+        description: "只验证采集和正文，不调用AI和飞书"
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: personal-growth-daily
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+    env:
+      ARK_API_KEY: ${{ secrets.ARK_API_KEY }}
+      FEISHU_APP_ID: ${{ secrets.FEISHU_APP_ID }}
+      FEISHU_APP_SECRET: ${{ secrets.FEISHU_APP_SECRET }}
+      ARK_MODEL: doubao-seed-2-0-mini-260428
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - name: 拉取代码
+        uses: actions/checkout@v4
+
+      - name: 安装 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: 安装依赖
+        run: python -m pip install -r requirements.txt
+
+      - name: 单元测试
+        run: pytest -q
+
+      - name: 执行每日任务
+        shell: bash
+        run: |
+          args=(--sources "${{ inputs.sources || 'all' }}")
+          if [[ -n "${{ inputs.target_date }}" ]]; then
+            args+=(--date "${{ inputs.target_date }}")
+          fi
+          if [[ "${{ inputs.dry_run }}" == "true" ]]; then
+            args+=(--dry-run)
+          fi
+          if [[ "${{ inputs.collect_only }}" == "true" ]]; then
+            args+=(--collect-only)
+          fi
+          python main.py "${args[@]}"
+
+      - name: 保存运行报告
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: run-report-${{ github.run_id }}
+          path: run-report.json
+          if-no-files-found: warn
+
+      - name: 写入任务摘要
+        if: always()
+        shell: bash
+        run: |
+          if [[ -f run-report.json ]]; then
+            echo '## 个人成长资讯运行报告' >> "$GITHUB_STEP_SUMMARY"
+            echo '```json' >> "$GITHUB_STEP_SUMMARY"
+            cat run-report.json >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+          fi

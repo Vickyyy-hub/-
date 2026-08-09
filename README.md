@@ -1,0 +1,35 @@
+# 个人成长每日资讯
+
+每天北京时间 08:00 处理前一自然日的虎嗅、少数派、界面新闻、IT之家、钛媒体和36氪正式文章，调用豆包筛选并逐篇写入飞书多维表格。
+
+## 自动流程
+
+1. 各站独立翻页，直到越过目标日期边界。
+2. 排除快讯、付费稿、促销、广告等非目标内容，并读取完整正文。
+3. 豆包按重要性、信息增量、社会影响和可行动性判断，生成核心事实及影响摘要。
+4. 按链接、标题和同一事件去重。
+5. 写入飞书后重新读取验证。
+
+36氪的发布日期来自其列表接口，正文使用 Jina Reader；绝不使用 Jina 返回的发布日期。
+
+## GitHub 配置
+
+仓库 Secrets：
+
+- `ARK_API_KEY`
+- `FEISHU_APP_ID`
+- `FEISHU_APP_SECRET`
+
+可选变量：`ARK_MODEL`，默认 `doubao-seed-2-0-mini-260428`。
+
+## 本地命令
+
+```bash
+python -m pip install -r requirements.txt
+pytest -q
+python main.py --date 2026-08-08 --collect-only
+python main.py --date 2026-08-08 --dry-run
+python main.py --date 2026-08-08
+```
+
+退出码 `2` 表示至少一个来源或正文未完整处理；其他来源仍会继续运行并写入，详细信息见 `run-report.json`。
