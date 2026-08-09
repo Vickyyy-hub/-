@@ -24,7 +24,7 @@ class ArkAnalyzer:
         self.http = http
         self.api_key = os.environ.get("ARK_API_KEY", "")
         self.model = os.environ.get("ARK_MODEL", "doubao-seed-2-0-mini-260215")
-        self.url = "https://ark.cn-beijing.volces.com/api/v3/chat/completions"
+        self.url = "https://ark.cn-beijing.volces.com/api/v3/responses"
         if not self.api_key:
             raise RuntimeError("缺少 ARK_API_KEY")
 
@@ -34,19 +34,24 @@ class ArkAnalyzer:
             headers={"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"},
             json={
                 "model": self.model,
-                "temperature": 0.1,
-                "response_format": {"type": "json_object"},
-                "messages": [
+                "input": [
                     {"role": "system", "content": system},
                     {"role": "user", "content": user},
                 ],
+                "thinking": {"type": "disabled"},
             },
         ).json()
         if response.get("error"):
             raise RuntimeError(f"豆包接口失败：{response['error']}")
         try:
-            text = response["choices"][0]["message"]["content"]
-        except (KeyError, IndexError, TypeError) as exc:
+            text = next(
+                content["text"]
+                for item in response["output"]
+                if item.get("type") == "message"
+                for content in item.get("content", [])
+                if content.get("type") in {"output_text", "text"} and content.get("text")
+            )
+        except (KeyError, StopIteration, TypeError) as exc:
             raise RuntimeError(f"豆包返回结构异常：{response}") from exc
         return parse_json_object(text)
 
