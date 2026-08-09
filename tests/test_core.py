@@ -52,8 +52,9 @@ def test_event_dedupe_keeps_longer_article():
 
 def test_feishu_hyperlink_shape_without_initializing_client():
     client = object.__new__(FeishuBitable)
-    client.field_types = {"来源网站": 15}
+    client.field_types = {"来源网站": 15, "内容主题": 4}
     assert client._source_value("https://example.com") == {
         "text": "https://example.com",
         "link": "https://example.com",
     }
+    assert client._field_value("内容主题", "摘要") == ["摘要"]

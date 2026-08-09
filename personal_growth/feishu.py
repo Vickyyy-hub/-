@@ -81,13 +81,18 @@ class FeishuBitable:
             return {"text": url, "link": url}
         return url
 
+    def _field_value(self, name: str, value: str) -> Any:
+        if self.field_types.get(name) == 4:
+            return [value]
+        return value
+
     def record_fields(self, article: Article) -> dict[str, Any]:
         ai = article.ai_result or {}
         return {
             "标题": article.title[:1000],
             "来源网站": self._source_value(article.url),
-            "内容主题": str(ai.get("content_topic", ""))[:5000],
-            "归档板块": str(ai.get("category", "社会与文化")),
+            "内容主题": self._field_value("内容主题", str(ai.get("content_topic", ""))[:5000]),
+            "归档板块": self._field_value("归档板块", str(ai.get("category", "社会与文化"))),
         }
 
     def write(self, articles: Iterable[Article]) -> tuple[int, int]:
