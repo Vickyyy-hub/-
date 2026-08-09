@@ -3,6 +3,8 @@ from __future__ import annotations
 import os
 from typing import Any
 
+import requests
+
 from .http import HttpClient
 from .models import Article
 from .text import parse_json_object, split_long_text
@@ -29,18 +31,22 @@ class ArkAnalyzer:
             raise RuntimeError("缺少 ARK_API_KEY")
 
     def _chat(self, system: str, user: str) -> dict[str, Any]:
-        response = self.http.post(
-            self.url,
-            headers={"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"},
-            json={
-                "model": self.model,
-                "input": [
-                    {"role": "system", "content": system},
-                    {"role": "user", "content": user},
-                ],
-                "thinking": {"type": "disabled"},
-            },
-        ).json()
+        try:
+            response = self.http.post(
+                self.url,
+                headers={"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"},
+                json={
+                    "model": self.model,
+                    "input": [
+                        {"role": "system", "content": system},
+                        {"role": "user", "content": user},
+                    ],
+                    "thinking": {"type": "disabled"},
+                },
+            ).json()
+        except requests.HTTPError as exc:
+            detail = exc.response.text[:1200] if exc.response is not None else ""
+            raise RuntimeError(f"豆包HTTP失败：{exc}；响应：{detail}") from exc
         if response.get("error"):
             raise RuntimeError(f"豆包接口失败：{response['error']}")
         try:
