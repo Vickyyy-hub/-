@@ -150,22 +150,26 @@ class Pipeline:
         report.sources = self.discover(day)
         articles = self._pre_dedupe(self.fetch_bodies(report.sources))
         if not collect_only:
+            feishu: FeishuBitable | None = None
+            if not dry_run:
+                feishu = FeishuBitable(self.http)
+                existing_urls, existing_titles = feishu.existing_keys()
+                unseen_articles = [
+                    article
+                    for article in articles
+                    if normalize_url(article.url) not in existing_urls
+                    and normalize_title(article.title) not in existing_titles
+                ]
+                report.existing_duplicates = len(articles) - len(unseen_articles)
+                articles = unseen_articles
             valuable = self.analyze(articles, report)
             selected, report.event_duplicates = self._event_dedupe(valuable)
             report.selected = len(selected)
             if not dry_run:
-                feishu = FeishuBitable(self.http)
-                existing_urls, existing_titles = feishu.existing_keys()
-                new_articles = [
-                    article
-                    for article in selected
-                    if normalize_url(article.url) not in existing_urls
-                    and normalize_title(article.title) not in existing_titles
-                ]
-                report.existing_duplicates = len(selected) - len(new_articles)
-                feishu.write(new_articles)
-                missing = feishu.verify_urls(new_articles)
+                assert feishu is not None
+                feishu.write(selected)
+                missing = feishu.verify_urls(selected)
                 report.write_failed = len(missing)
-                report.written = len(new_articles) - len(missing)
+                report.written = len(selected) - len(missing)
         report_path.write_text(json.dumps(report.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8")
         return report

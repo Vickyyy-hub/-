@@ -100,7 +100,8 @@ class FeishuBitable:
             try:
                 payload = self._api("POST", path, json={"records": batch})
                 written += len(payload["data"].get("records", []))
-            except Exception:
+            except Exception as exc:
+                print(f"[飞书] 批量写入失败（{len(batch)} 条）：{exc}")
                 failed += len(batch)
         return written, failed
 
