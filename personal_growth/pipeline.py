@@ -93,28 +93,62 @@ class Pipeline:
         return list(chosen.values())
 
     @staticmethod
-    def _event_dedupe(articles: list[Article]) -> tuple[list[Article], int]:
-        selected: list[Article] = []
+    def _quality(article: Article) -> tuple[int, int, int, int]:
+        ai = article.ai_result or {}
+        scores = ai.get("scores") or {}
+        return (
+            int(ai.get("score_total", 0)),
+            int(scores.get("information_gain", 0)),
+            int(scores.get("evidence_density", 0)),
+            len(ai.get("core_facts") or []),
+        )
+
+    @staticmethod
+    def _same_event(article: Article, kept: Article) -> bool:
+        event = normalize_title(str((article.ai_result or {}).get("event_key", "")))
+        kept_event = normalize_title(str((kept.ai_result or {}).get("event_key", "")))
+        return bool(
+            (event and kept_event and (event == kept_event or similarity(event, kept_event) >= 0.84))
+            or similarity(article.title, kept.title) >= 0.90
+        )
+
+    @staticmethod
+    def _has_increment(article: Article, group: list[Article]) -> bool:
+        ai = article.ai_result or {}
+        scores = ai.get("scores") or {}
+        if int(scores.get("information_gain", 0)) < 4 or int(scores.get("evidence_density", 0)) < 3:
+            return False
+        known = [
+            point
+            for item in group
+            for point in ((item.ai_result or {}).get("unique_points") or [])
+        ]
+        points = ai.get("unique_points") or []
+        return bool(points) and any(not any(similarity(point, old) >= 0.80 for old in known) for point in points)
+
+    @classmethod
+    def _assign_statuses(cls, articles: list[Article]) -> tuple[list[Article], int]:
+        groups: list[list[Article]] = []
         duplicates = 0
-        for article in sorted(articles, key=lambda item: len(item.body), reverse=True):
-            event = normalize_title(str((article.ai_result or {}).get("event_key", "")))
-            duplicate = False
-            for kept in selected:
-                kept_event = normalize_title(str((kept.ai_result or {}).get("event_key", "")))
-                if event and kept_event and (event == kept_event or similarity(event, kept_event) >= 0.86):
-                    duplicate = True
-                    break
-                if similarity(article.title, kept.title) >= 0.90:
-                    duplicate = True
-                    break
-            if duplicate:
-                duplicates += 1
+        for article in sorted(articles, key=cls._quality, reverse=True):
+            group = next((items for items in groups if cls._same_event(article, items[0])), None)
+            if group is None:
+                article.record_status = "主稿"
+                groups.append([article])
+            elif cls._has_increment(article, group):
+                article.record_status = "增量稿"
+                group.append(article)
             else:
-                selected.append(article)
+                article.record_status = "普通重复稿"
+                group.append(article)
+                duplicates += 1
+        selected = [item for group in groups for item in group if item.record_status != "普通重复稿"]
         selected.sort(key=lambda item: item.published_at, reverse=True)
         return selected, duplicates
 
-    def analyze(self, articles: list[Article], report: RunReport) -> list[Article]:
+    def analyze(self, articles: list[Article], report: RunReport, *, include_rejected: bool = False) -> list[Article]:
+        if not articles:
+            return []
         analyzer = ArkAnalyzer(self.http)
 
         def evaluate(article: Article) -> tuple[Article, dict | None, str]:
@@ -128,7 +162,7 @@ class Pipeline:
                         time.sleep(1.5 * (2**attempt))
             return article, None, last_error
 
-        valuable: list[Article] = []
+        analyzed: list[Article] = []
         workers = min(int(os.environ.get("AI_WORKERS", "4")), max(1, len(articles)))
         with ThreadPoolExecutor(max_workers=workers) as pool:
             futures = [pool.submit(evaluate, article) for article in articles]
@@ -140,9 +174,43 @@ class Pipeline:
                     continue
                 report.ai_evaluated += 1
                 article.ai_result = result
-                if result and result.get("valuable"):
-                    valuable.append(article)
-        return valuable
+                if include_rejected or (result and result.get("valuable")):
+                    analyzed.append(article)
+        return analyzed
+
+    @staticmethod
+    def _record_source_stats(report: RunReport, all_valuable: list[Article]) -> None:
+        for article in all_valuable:
+            source = next(value for value in report.sources.values() if value.source == article.source)
+            if article.record_status == "主稿":
+                source.selected_main += 1
+            elif article.record_status == "增量稿":
+                source.selected_incremental += 1
+            elif article.record_status == "普通重复稿":
+                source.event_duplicates += 1
+        huxiu = next((value for value in report.sources.values() if value.source == "虎嗅"), None)
+        if huxiu and huxiu.body_success > 0 and huxiu.selected_main + huxiu.selected_incremental == 0:
+            huxiu.warnings.append("虎嗅正文读取成功但入选为0，请检查评分、正文质量或跨站去重")
+
+    def _prepare_backfill(self, results: dict[str, SourceResult], feishu: FeishuBitable) -> tuple[int, int]:
+        url_index, title_index = feishu.record_index()
+        matched_ids: set[str] = set()
+        supported_records = {
+            record.get("record_id", "")
+            for record in url_index.values()
+            if record.get("record_id")
+        }
+        for result in results.values():
+            matched: list[Article] = []
+            for article in result.articles:
+                record = url_index.get(normalize_url(article.url)) or title_index.get(normalize_title(article.title))
+                if not record:
+                    continue
+                article.record_id = record.get("record_id", "")
+                matched_ids.add(article.record_id)
+                matched.append(article)
+            result.articles = matched
+        return len(matched_ids), len(supported_records - matched_ids)
 
     def run(
         self,
@@ -150,32 +218,49 @@ class Pipeline:
         *,
         dry_run: bool = False,
         collect_only: bool = False,
+        backfill: bool = False,
         report_path: Path = Path("run-report.json"),
     ) -> RunReport:
-        report = RunReport(day.isoformat(), dry_run=dry_run, collect_only=collect_only)
+        report = RunReport(day.isoformat(), dry_run=dry_run, collect_only=collect_only, backfill=backfill)
+        feishu: FeishuBitable | None = None
+        if not collect_only and (backfill or not dry_run):
+            feishu = FeishuBitable(self.http)
         report.sources = self.discover(day)
+        if backfill:
+            assert feishu is not None
+            _, report.unchanged = self._prepare_backfill(report.sources, feishu)
         articles = self._pre_dedupe(self.fetch_bodies(report.sources))
         if not collect_only:
-            feishu: FeishuBitable | None = None
-            if not dry_run:
-                feishu = FeishuBitable(self.http)
+            if not backfill and not dry_run:
+                assert feishu is not None
                 existing_urls, existing_titles = feishu.existing_keys()
                 unseen_articles = [
-                    article
-                    for article in articles
+                    article for article in articles
                     if normalize_url(article.url) not in existing_urls
                     and normalize_title(article.title) not in existing_titles
                 ]
                 report.existing_duplicates = len(articles) - len(unseen_articles)
                 articles = unseen_articles
-            valuable = self.analyze(articles, report)
-            selected, report.event_duplicates = self._event_dedupe(valuable)
+            analyzed = self.analyze(articles, report, include_rejected=backfill)
+            valuable = [article for article in analyzed if (article.ai_result or {}).get("valuable")]
+            selected, report.event_duplicates = self._assign_statuses(valuable)
+            rejected = [article for article in analyzed if not (article.ai_result or {}).get("valuable")]
+            for article in rejected:
+                article.record_status = "普通重复稿"
+            self._record_source_stats(report, valuable)
             report.selected = len(selected)
-            if not dry_run:
+            if backfill and not dry_run:
                 assert feishu is not None
-                feishu.write(selected)
+                update_articles = valuable + rejected
+                updated, failed = feishu.update(update_articles)
+                missing = feishu.verify_updates(update_articles)
+                report.updated = max(0, len(update_articles) - len(missing))
+                report.update_failed = max(failed, len(missing))
+            elif not dry_run:
+                assert feishu is not None
+                written, failed = feishu.write(selected)
                 missing = feishu.verify_urls(selected)
-                report.write_failed = len(missing)
-                report.written = len(selected) - len(missing)
+                report.written = max(0, len(selected) - len(missing))
+                report.write_failed = max(failed, len(missing))
         report_path.write_text(json.dumps(report.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8")
         return report

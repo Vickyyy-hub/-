@@ -1,6 +1,7 @@
 from datetime import date
 
 from personal_growth.feishu import FeishuBitable
+from personal_growth.ai import ArkAnalyzer
 from personal_growth.models import Article
 from personal_growth.pipeline import Pipeline
 from personal_growth.text import (
@@ -40,14 +41,52 @@ def test_json_parser_and_chunker():
     assert all(len(chunk) <= 120 for chunk in chunks)
 
 
-def test_event_dedupe_keeps_longer_article():
+def _ai(score: int, unique: str) -> dict:
+    return {
+        "event_key": "公司发布新模型",
+        "score_total": score,
+        "scores": {"information_gain": 4, "evidence_density": 4},
+        "core_facts": ["事实一", "事实二", "事实三"],
+        "unique_points": [unique],
+        "valuable": True,
+    }
+
+
+def test_event_group_uses_quality_and_keeps_real_increment():
     first = Article("甲", "公司发布新模型", "https://a.test/1", from_epoch(1786195964), body="长" * 500)
     second = Article("乙", "公司正式发布新模型", "https://b.test/2", from_epoch(1786195964), body="短" * 100)
-    first.ai_result = {"event_key": "公司发布新模型"}
-    second.ai_result = {"event_key": "公司发布新模型"}
-    kept, duplicates = Pipeline._event_dedupe([second, first])
-    assert kept == [first]
-    assert duplicates == 1
+    first.ai_result = _ai(16, "同一组事实")
+    second.ai_result = _ai(22, "新增独家数据")
+    kept, duplicates = Pipeline._assign_statuses([first, second])
+    assert kept[0] == second
+    assert second.record_status == "主稿"
+    assert first.record_status == "增量稿"
+    assert duplicates == 0
+
+
+def test_ai_validation_rejects_short_core_content():
+    result = {
+        "candidate": True,
+        "exclusion_reason": "",
+        "core_facts": ["短事实一", "短事实二", "短事实三"],
+        "key_numbers": [],
+        "impact": "这是一段长度足够通过单字段校验的影响判断，但全部结构组合后依然明显不足三百字，因此必须触发整体长度校验并要求重新生成。",
+        "actions": ["采取行动"],
+        "topics": ["人工智能"],
+        "category": "科技与AI",
+        "event_key": "公司发布新模型带来变化",
+        "unique_points": [],
+        "scores": {
+            "importance": 4, "information_gain": 4, "social_impact": 3,
+            "actionability": 3, "evidence_density": 4,
+        },
+    }
+    try:
+        ArkAnalyzer.validate_result(result)
+    except ValueError as exc:
+        assert "长度不合格" in str(exc)
+    else:
+        raise AssertionError("短摘要应被拒绝")
 
 
 def test_feishu_hyperlink_shape_without_initializing_client():

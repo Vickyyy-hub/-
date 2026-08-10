@@ -17,6 +17,8 @@ class Article:
     meta: dict[str, Any] = field(default_factory=dict)
     excluded_reason: str = ""
     ai_result: dict[str, Any] | None = None
+    record_status: str = ""
+    record_id: str = ""
 
 
 @dataclass
@@ -27,9 +29,13 @@ class SourceResult:
     body_success: int = 0
     body_failed: int = 0
     excluded: int = 0
+    selected_main: int = 0
+    selected_incremental: int = 0
+    event_duplicates: int = 0
     coverage_complete: bool = False
     articles: list[Article] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -44,6 +50,10 @@ class RunReport:
     write_failed: int = 0
     dry_run: bool = False
     collect_only: bool = False
+    backfill: bool = False
+    updated: int = 0
+    update_failed: int = 0
+    unchanged: int = 0
 
     @property
     def partial(self) -> bool:
@@ -52,7 +62,7 @@ class RunReport:
             or result.body_failed > 0
             or bool(result.errors)
             for result in self.sources.values()
-        ) or self.write_failed > 0
+        ) or self.write_failed > 0 or self.update_failed > 0
 
     def to_dict(self) -> dict[str, Any]:
         source_data: dict[str, Any] = {}
@@ -63,14 +73,19 @@ class RunReport:
                 "body_success": result.body_success,
                 "body_failed": result.body_failed,
                 "excluded": result.excluded,
+                "selected_main": result.selected_main,
+                "selected_incremental": result.selected_incremental,
+                "event_duplicates": result.event_duplicates,
                 "coverage_complete": result.coverage_complete,
                 "errors": result.errors,
+                "warnings": result.warnings,
             }
         return {
             "target_date": self.target_date,
             "partial": self.partial,
             "dry_run": self.dry_run,
             "collect_only": self.collect_only,
+            "backfill": self.backfill,
             "sources": source_data,
             "ai_evaluated": self.ai_evaluated,
             "selected": self.selected,
@@ -78,4 +93,7 @@ class RunReport:
             "existing_duplicates": self.existing_duplicates,
             "written": self.written,
             "write_failed": self.write_failed,
+            "updated": self.updated,
+            "update_failed": self.update_failed,
+            "unchanged": self.unchanged,
         }

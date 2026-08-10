@@ -16,6 +16,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--sources", default="all", help="all 或逗号分隔：huxiu,sspai,jiemian,ithome,tmtpost,36kr")
     parser.add_argument("--dry-run", action="store_true", help="执行采集和AI，但不写飞书")
     parser.add_argument("--collect-only", action="store_true", help="只采集并验证正文，不调用AI、不写飞书")
+    parser.add_argument("--backfill-existing", action="store_true", help="按指定日期原地回填已有飞书记录，不新增")
     return parser.parse_args()
 
 
@@ -26,7 +27,14 @@ def main() -> int:
     unknown = set(sources) - set(ADAPTERS)
     if unknown:
         raise SystemExit(f"未知来源：{', '.join(sorted(unknown))}")
-    report = Pipeline(sources).run(target, dry_run=args.dry_run, collect_only=args.collect_only)
+    if args.backfill_existing and (args.dry_run or args.collect_only):
+        raise SystemExit("历史回填不能与 --dry-run 或 --collect-only 同时使用")
+    report = Pipeline(sources).run(
+        target,
+        dry_run=args.dry_run,
+        collect_only=args.collect_only,
+        backfill=args.backfill_existing,
+    )
     print(json.dumps(report.to_dict(), ensure_ascii=False, indent=2))
     if report.partial:
         print("任务部分失败：请查看 run-report.json 中各站错误。", file=sys.stderr)
