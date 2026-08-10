@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import threading
 import time
 from abc import ABC, abstractmethod
 from datetime import date, datetime
@@ -468,6 +469,11 @@ class Kr36Adapter(SourceAdapter):
     name = "36氪"
     list_url = "https://gateway.36kr.com/api/mis/nav/ifm/subNav/flow"
 
+    def __init__(self, http: HttpClient, max_pages: int = 40) -> None:
+        super().__init__(http, max_pages)
+        self.body_lock = threading.Lock()
+        self.last_body_request = 0.0
+
     def discover(self, day: date) -> SourceResult:
         result = SourceResult(self.name)
         start, _ = target_bounds(day)
@@ -532,7 +538,12 @@ class Kr36Adapter(SourceAdapter):
         return result
 
     def fetch_body(self, article: Article) -> str:
-        raw = self.http.get(f"https://r.jina.ai/{article.url}").text
+        with self.body_lock:
+            delay = 1.5 - (time.monotonic() - self.last_body_request)
+            if delay > 0:
+                time.sleep(delay)
+            raw = self.http.get(f"https://r.jina.ai/{article.url}").text
+            self.last_body_request = time.monotonic()
         marker = "Markdown Content:"
         if marker in raw:
             raw = raw.split(marker, 1)[1]

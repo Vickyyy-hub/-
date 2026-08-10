@@ -9,7 +9,7 @@ from typing import Any
 
 import requests
 
-from .evidence import effective_chars, extract_numbers
+from .evidence import NUMBER_RE, effective_chars, extract_numbers
 from .models import Article
 from .state import StateStore
 from .text import clean_text, parse_json_object
@@ -19,7 +19,7 @@ CATEGORIES = (
     "职业与效率", "消费与生活", "社会与文化", "全球与出海",
 )
 FILTER_VERSION = "filter_v2"
-SUMMARY_VERSION = "summary_v3"
+SUMMARY_VERSION = "summary_v4"
 FILTER_STAGE = "filter"
 SUMMARY_STAGE = "summary"
 
@@ -221,18 +221,55 @@ class ArkAnalyzer:
         summary = cls._clean_summary(raw)
         size = effective_chars(summary)
         paragraphs = [item.strip() for item in re.split(r"\n+", summary) if item.strip()]
-        if not (500 < size <= 540 and len(paragraphs) == 3):
+        if size <= 500 or len(paragraphs) != 3:
             return summary
-        overflow = size - 499
-        tail = paragraphs[-1]
-        if len(tail) <= overflow + 60:
-            return summary
-        paragraphs[-1] = tail[:-overflow].rstrip("，；：、。！？ ") + "。"
-        return "\n\n".join(paragraphs)
+        lengths = [effective_chars(item) for item in paragraphs]
+        budgets = [min(length, 100) for length in lengths]
+        remaining = 480 - sum(budgets)
+        while remaining > 0:
+            candidates = [index for index, length in enumerate(lengths) if budgets[index] < length]
+            if not candidates:
+                break
+            for index in candidates:
+                if remaining <= 0:
+                    break
+                addition = min(lengths[index] - budgets[index], max(1, remaining // len(candidates)))
+                budgets[index] += addition
+                remaining -= addition
+
+        fitted: list[str] = []
+        for paragraph, budget in zip(paragraphs, budgets):
+            if effective_chars(paragraph) <= budget:
+                fitted.append(paragraph)
+                continue
+            visible = 0
+            chars: list[str] = []
+            for char in paragraph:
+                if not char.isspace():
+                    if visible >= budget - 1:
+                        break
+                    visible += 1
+                chars.append(char)
+            fitted.append("".join(chars).rstrip("，；：、。！？ ") + "。")
+        return "\n\n".join(fitted)
+
+    @staticmethod
+    def _scrub_unverified_numbers(summary: str, evidence: str) -> str:
+        allowed = extract_numbers(evidence)
+
+        def replace(match: re.Match[str]) -> str:
+            raw = match.group(0)
+            normalized = raw.replace("％", "%").replace(",", "")
+            if normalized in allowed:
+                return raw
+            return "相关时间" if raw.endswith(("年", "月", "日", "天")) else "相关数值"
+
+        return NUMBER_RE.sub(replace, summary)
 
     @classmethod
     def validate_summary(cls, raw: str, evidence: str) -> str:
-        summary = cls._fit_summary_length(raw)
+        summary = cls._scrub_unverified_numbers(cls._clean_summary(raw), evidence)
+        summary = cls._fit_summary_length(summary)
         if summary == "证据不足，无法生成可靠摘要":
             raise ValueError("证据不足")
         size = effective_chars(summary)

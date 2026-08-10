@@ -119,11 +119,18 @@ def test_summary_requires_three_paragraphs_and_300_to_500_chars():
 
 
 def test_summary_safely_fits_small_overflow_without_second_call():
-    summary = "甲" * 170 + "\n\n" + "乙" * 170 + "\n\n" + "丙" * 167
+    summary = "甲" * 220 + "\n\n" + "乙" * 210 + "\n\n" + "丙" * 210
     fitted = ArkAnalyzer.validate_summary(summary, "原文没有数字")
     assert 300 <= effective_chars(fitted) <= 500
     assert len(fitted.split("\n\n")) == 3
     assert fitted.endswith("。")
+
+
+def test_summary_scrubs_numbers_not_present_in_evidence():
+    summary = "甲" * 100 + "10日发布。" + "\n\n" + "乙" * 105 + "\n\n" + "丙" * 105
+    fitted = ArkAnalyzer.validate_summary(summary, "原文没有日期数字")
+    assert "10日" not in fitted
+    assert "相关时间" in fitted
 
 
 def test_state_cache_persists_stages_and_progress(tmp_path):
@@ -207,7 +214,7 @@ def test_analyzer_uses_stage_cache_without_api_call(monkeypatch, tmp_path):
     summary = "甲" * 105 + "\n\n" + "乙" * 105 + "\n\n" + "丙" * 105
     store.put_stage("hash", "filter", f"{analyzer.model}:filter_v2", filter_result)
     store.put_stage(
-        "hash", "summary", f"{analyzer.model}:summary_v3",
+        "hash", "summary", f"{analyzer.model}:summary_v4",
         {"status": "入选", "core_content": summary, "summary_chars": 315},
     )
     monkeypatch.setattr(analyzer, "_request", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("不应调用API")))
