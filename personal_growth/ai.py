@@ -19,7 +19,7 @@ CATEGORIES = (
     "职业与效率", "消费与生活", "社会与文化", "全球与出海",
 )
 FILTER_VERSION = "filter_v2"
-SUMMARY_VERSION = "summary_v2"
+SUMMARY_VERSION = "summary_v3"
 FILTER_STAGE = "filter"
 SUMMARY_STAGE = "summary"
 
@@ -200,7 +200,7 @@ class ArkAnalyzer:
         system = (
             "你是严谨的商业新闻情报编辑，只使用提供的证据，不得补充外部事实、数字或因果。"
             "输出恰好三段连续正文，不要标题、标签、项目符号、JSON、开场白或结束语。"
-            "总长度严格300到500个可见字符，目标360到450字。第一段写主体、时间、事件、数据和变化；"
+            "总长度严格300到500个可见字符，目标340到420字，绝对不要超过480字。第一段写主体、时间、事件、数据和变化；"
             "第二段写行业、企业、市场、政策或供应链影响；第三段写1到3项可执行启示。"
             "优先复用原文关键句，无数字则不编造，禁止空话和标题改写。证据不足时只输出：证据不足，无法生成可靠摘要"
         )
@@ -217,8 +217,22 @@ class ArkAnalyzer:
         return text.strip()
 
     @classmethod
-    def validate_summary(cls, raw: str, evidence: str) -> str:
+    def _fit_summary_length(cls, raw: str) -> str:
         summary = cls._clean_summary(raw)
+        size = effective_chars(summary)
+        paragraphs = [item.strip() for item in re.split(r"\n+", summary) if item.strip()]
+        if not (500 < size <= 540 and len(paragraphs) == 3):
+            return summary
+        overflow = size - 499
+        tail = paragraphs[-1]
+        if len(tail) <= overflow + 60:
+            return summary
+        paragraphs[-1] = tail[:-overflow].rstrip("，；：、。！？ ") + "。"
+        return "\n\n".join(paragraphs)
+
+    @classmethod
+    def validate_summary(cls, raw: str, evidence: str) -> str:
+        summary = cls._fit_summary_length(raw)
         if summary == "证据不足，无法生成可靠摘要":
             raise ValueError("证据不足")
         size = effective_chars(summary)
@@ -266,7 +280,7 @@ class ArkAnalyzer:
                     return {**filter_result, **summary_result, "valuable": False}
                 correction = (
                     f"上一版摘要未通过校验：{first_error}。\n上一版：\n{raw}\n\n"
-                    f"原证据：\n{summary_evidence}\n\n严格重写为三段、360到450字，只输出正文。"
+                    f"原证据：\n{summary_evidence}\n\n严格重写为三段、340到420字，绝对不超过480字，只输出正文。"
                 )
                 corrected = self._request(system, correction, 900, SUMMARY_STAGE)
                 try:
