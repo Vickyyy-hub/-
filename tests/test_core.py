@@ -138,6 +138,33 @@ def test_ark_429_exposes_original_error(monkeypatch):
         raise AssertionError("429必须抛出可观测错误")
 
 
+def test_account_limit_429_does_not_retry(monkeypatch):
+    monkeypatch.setenv("ARK_API_KEY", "test")
+    monkeypatch.setenv("ARK_MIN_INTERVAL_SECONDS", "0")
+    monkeypatch.setenv("ARK_MAX_429_RETRIES", "4")
+    analyzer = ArkAnalyzer()
+    calls = 0
+
+    class Response:
+        status_code = 429
+        text = '{"error":{"code":"SetLimitExceeded","message":"safe mode limit"}}'
+        headers = {}
+
+    def fake_post(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return Response()
+
+    monkeypatch.setattr(analyzer.session, "post", fake_post)
+    try:
+        analyzer._request("system", "user", 20, "filter")
+    except ArkRateLimitError:
+        pass
+    else:
+        raise AssertionError("账户级限额必须中止")
+    assert calls == 1
+
+
 def test_analyzer_uses_stage_cache_without_api_call(monkeypatch, tmp_path):
     monkeypatch.setenv("ARK_API_KEY", "test")
     monkeypatch.setenv("ARK_MIN_INTERVAL_SECONDS", "0")

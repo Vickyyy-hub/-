@@ -111,6 +111,10 @@ class ArkAnalyzer:
                 self.consecutive_429 += 1
                 retry_header = response.headers.get("Retry-After", "")
                 retry_after = float(retry_header) if retry_header.replace(".", "", 1).isdigit() else None
+                # A model-level safety quota pauses service until the account setting
+                # is changed; waiting and retrying cannot recover it.
+                if "SetLimitExceeded" in detail:
+                    raise ArkRateLimitError(detail, retry_after)
                 if attempt >= self.max_429_retries or self.consecutive_429 >= self.circuit_limit:
                     raise ArkRateLimitError(detail, retry_after)
                 configured = self.backoff[min(attempt, len(self.backoff) - 1)]

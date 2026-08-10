@@ -237,7 +237,10 @@ class Pipeline:
             elif article.record_status == "普通重复稿":
                 source.event_duplicates += 1
         huxiu = next((value for value in report.sources.values() if value.source == "虎嗅"), None)
-        if huxiu and huxiu.body_success > 0 and huxiu.selected_main + huxiu.selected_incremental == 0:
+        if (
+            huxiu and huxiu.body_success > 0 and not huxiu.errors
+            and huxiu.selected_main + huxiu.selected_incremental == 0
+        ):
             huxiu.warnings.append("虎嗅正文读取成功但入选为0，请检查评分、正文质量或跨站去重")
 
     def _prepare_backfill(self, results: dict[str, SourceResult], feishu: FeishuBitable) -> tuple[int, int]:
