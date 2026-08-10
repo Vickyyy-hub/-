@@ -153,7 +153,7 @@ jobs:
           python main.py "${args[@]}"
 
       - name: 保存分析断点
-        if: ${{ always() && steps.run_task.outcome != 'skipped' }}
+        if: ${{ always() && steps.run_task.outcome != 'skipped' && inputs.feishu_check_only != true }}
         uses: actions/cache/save@v4
         with:
           path: .state
@@ -174,7 +174,7 @@ jobs:
           key: personal-growth-complete-${{ steps.target.outputs.date }}
 
       - name: 保存运行报告
-        if: always()
+        if: ${{ always() && inputs.feishu_check_only != true }}
         uses: actions/upload-artifact@v4
         with:
           name: run-report-${{ github.run_id }}
@@ -182,7 +182,7 @@ jobs:
           if-no-files-found: warn
 
       - name: 写入任务摘要
-        if: always()
+        if: ${{ always() && inputs.feishu_check_only != true }}
         shell: bash
         run: |
           if [[ -f run-report.json ]]; then
