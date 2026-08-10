@@ -117,6 +117,13 @@ def test_state_cache_persists_stages_and_progress(tmp_path):
     reopened.close()
 
 
+def test_report_exposes_summary_rejections():
+    from personal_growth.models import RunReport
+
+    report = RunReport("2026-08-09", summary_rejected=2)
+    assert report.to_dict()["summary_rejected"] == 2
+
+
 def test_ark_429_exposes_original_error(monkeypatch):
     monkeypatch.setenv("ARK_API_KEY", "test")
     monkeypatch.setenv("ARK_MIN_INTERVAL_SECONDS", "0")

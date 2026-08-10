@@ -63,6 +63,7 @@ class RunReport:
     checkpoint_index: int = 0
     summary_char_min: int = 0
     summary_char_max: int = 0
+    summary_rejected: int = 0
 
     @property
     def partial(self) -> bool:
@@ -114,4 +115,5 @@ class RunReport:
             "checkpoint_index": self.checkpoint_index,
             "summary_char_min": self.summary_char_min,
             "summary_char_max": self.summary_char_max,
+            "summary_rejected": self.summary_rejected,
         }

@@ -210,6 +210,12 @@ class Pipeline:
                     break
                 report.ai_evaluated += 1
                 article.ai_result = result
+                if str(result.get("reason", "")).startswith("摘要"):
+                    source_result = next(value for value in report.sources.values() if value.source == article.source)
+                    source_result.warnings.append(
+                        f"摘要淘汰 {article.url}: {result.get('reason')}"
+                    )
+                    report.summary_rejected += 1
                 if include_rejected or result.get("valuable"):
                     analyzed.append(article)
                 state.save_progress(job_id, manifest, index + 1, None, "running")
