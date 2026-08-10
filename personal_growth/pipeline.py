@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import time
+from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date
 from pathlib import Path
@@ -99,6 +100,26 @@ class Pipeline:
             if previous is None or len(article.body) > len(previous.body):
                 chosen[key] = article
         return list(chosen.values())
+
+    @staticmethod
+    def _sample_articles(articles: list[Article], limit: int) -> list[Article]:
+        if limit <= 0 or len(articles) <= limit:
+            return articles
+        groups: dict[str, list[Article]] = defaultdict(list)
+        for article in articles:
+            groups[article.source].append(article)
+        for items in groups.values():
+            items.sort(key=lambda item: (item.published_at, item.url), reverse=True)
+        sampled: list[Article] = []
+        while len(sampled) < limit:
+            progressed = False
+            for source in sorted(groups):
+                if groups[source] and len(sampled) < limit:
+                    sampled.append(groups[source].pop(0))
+                    progressed = True
+            if not progressed:
+                break
+        return sampled
 
     @staticmethod
     def _quality(article: Article) -> tuple[int, int, int, int]:
@@ -289,7 +310,7 @@ class Pipeline:
             _, report.unchanged = self._prepare_backfill(report.sources, feishu)
         articles = self._pre_dedupe(self.fetch_bodies(report.sources))
         if max_articles > 0:
-            articles = sorted(articles, key=lambda item: (item.source, item.url))[:max_articles]
+            articles = self._sample_articles(articles, max_articles)
         if not collect_only:
             if not backfill and not dry_run:
                 assert feishu is not None

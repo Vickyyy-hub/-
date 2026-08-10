@@ -72,6 +72,18 @@ def test_event_group_uses_quality_and_keeps_real_increment():
     assert duplicates == 0
 
 
+def test_manual_limit_samples_sources_round_robin():
+    items = [
+        Article(source, f"{source}-{index}", f"https://example.com/{source}/{index}", from_epoch(1786195964 + index))
+        for source in ("虎嗅", "少数派", "界面新闻")
+        for index in range(5)
+    ]
+    sampled = Pipeline._sample_articles(items, 6)
+    assert len(sampled) == 6
+    assert {item.source for item in sampled} == {"虎嗅", "少数派", "界面新闻"}
+    assert all(sum(item.source == source for item in sampled) == 2 for source in {"虎嗅", "少数派", "界面新闻"})
+
+
 def test_evidence_packets_cover_sections_and_stay_bounded():
     article = Article("虎嗅", "公司调整欧洲业务", "https://example.com/1", from_epoch(1786195964))
     article.body = "\n".join(
