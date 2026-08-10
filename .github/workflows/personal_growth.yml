@@ -4,6 +4,7 @@ on:
   schedule:
     - cron: "7 0 * * *"
     - cron: "37 0 * * *"
+    - cron: "7 1 * * *"
   workflow_dispatch:
     inputs:
       target_date:
@@ -35,6 +36,16 @@ on:
         required: false
         default: false
         type: boolean
+      max_articles:
+        description: "最多处理文章数；0表示不限制"
+        required: false
+        default: "0"
+        type: string
+      ark_max_429_retries:
+        description: "豆包429最大重试次数；诊断时可设0"
+        required: false
+        default: "4"
+        type: string
 
 permissions:
   contents: read
@@ -52,6 +63,13 @@ jobs:
       FEISHU_APP_ID: ${{ secrets.FEISHU_APP_ID }}
       FEISHU_APP_SECRET: ${{ secrets.FEISHU_APP_SECRET }}
       ARK_MODEL: doubao-seed-2-0-mini-260215
+      AI_WORKERS: "1"
+      ARK_MIN_INTERVAL_SECONDS: "4"
+      ARK_MAX_429_RETRIES: ${{ inputs.ark_max_429_retries || '4' }}
+      ARK_429_CIRCUIT_LIMIT: "3"
+      ARK_BACKOFF_SECONDS: "60,120,300,600"
+      STATE_DB: .state/news_pipeline.sqlite
+      MAX_RUNTIME_MINUTES: "280"
       PYTHONUNBUFFERED: "1"
     steps:
       - name: 拉取代码
@@ -76,6 +94,23 @@ jobs:
             target_date="$(TZ=Asia/Shanghai date -d yesterday +%F)"
           fi
           echo "date=$target_date" >> "$GITHUB_OUTPUT"
+          if [[ "${{ inputs.backfill_existing }}" == "true" ]]; then
+            mode="backfill"
+          elif [[ "${{ inputs.dry_run }}" == "true" ]]; then
+            mode="dry"
+          else
+            mode="daily"
+          fi
+          echo "mode=$mode" >> "$GITHUB_OUTPUT"
+
+      - name: 恢复分析断点
+        id: analysis_state
+        uses: actions/cache/restore@v4
+        with:
+          path: .state
+          key: news-state-${{ steps.target.outputs.date }}-${{ steps.target.outputs.mode }}-${{ github.run_id }}
+          restore-keys: |
+            news-state-${{ steps.target.outputs.date }}-${{ steps.target.outputs.mode }}-
 
       - name: 检查当日完成标记
         id: completed
@@ -104,7 +139,17 @@ jobs:
           if [[ "${{ inputs.backfill_existing }}" == "true" ]]; then
             args+=(--backfill-existing)
           fi
+          if [[ "${{ inputs.max_articles || '0' }}" != "0" ]]; then
+            args+=(--max-articles "${{ inputs.max_articles }}")
+          fi
           python main.py "${args[@]}"
+
+      - name: 保存分析断点
+        if: ${{ always() && steps.run_task.outcome != 'skipped' }}
+        uses: actions/cache/save@v4
+        with:
+          path: .state
+          key: news-state-${{ steps.target.outputs.date }}-${{ steps.target.outputs.mode }}-${{ github.run_id }}
 
       - name: 生成当日完成标记
         if: ${{ steps.run_task.outcome == 'success' && inputs.dry_run != true && inputs.collect_only != true && inputs.backfill_existing != true }}

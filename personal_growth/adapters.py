@@ -381,7 +381,7 @@ class ITHomeAdapter(SourceAdapter):
         raw = self.http.get(article.url).text
         for selector in (".post_content", "#paragraph", "article"):
             body = html_to_text(raw, selector)
-            if len(body) >= 250:
+            if len(body) >= 80:
                 return body
         return ""
 

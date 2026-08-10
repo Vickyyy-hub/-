@@ -9,16 +9,19 @@ from pathlib import Path
 from typing import Iterable
 
 from .adapters import ADAPTERS, ExcludedArticle, SourceAdapter
-from .ai import ArkAnalyzer
+from .ai import ArkAPIError, ArkAnalyzer, ArkRateLimitError
+from .evidence import content_hash, evidence_packets
 from .feishu import FeishuBitable
 from .http import HttpClient
 from .models import Article, RunReport, SourceResult
+from .state import StateStore
 from .text import clean_text, normalize_title, normalize_url, similarity
 
 
 class Pipeline:
     def __init__(self, source_keys: list[str]) -> None:
         self.http = HttpClient(timeout=int(os.environ.get("HTTP_TIMEOUT", "35")))
+        self.deadline = time.monotonic() + int(os.environ.get("MAX_RUNTIME_MINUTES", "280")) * 60
         max_pages = int(os.environ.get("MAX_PAGES", "40"))
         self.adapters: dict[str, SourceAdapter] = {
             key: ADAPTERS[key](self.http, max_pages=max_pages) for key in source_keys
@@ -56,8 +59,13 @@ class Pipeline:
         def fetch(key: str, article: Article) -> tuple[str, Article, str, str, bool]:
             try:
                 body = clean_text(self.adapters[key].fetch_body(article))
-                if len(body) < 250:
-                    raise ValueError(f"正文过短（{len(body)}字）")
+                if not body:
+                    raise ValueError("正文为空")
+                if len(body) < 400:
+                    raise ExcludedArticle(f"正文信息不足（{len(body)}字）")
+                promo_sample = article.title + "\n" + body[:800]
+                if any(keyword in promo_sample for keyword in ("领券购买", "立即下单", "限时优惠", "品牌赞助", "推广合作")):
+                    raise ExcludedArticle("正文命中促销或推广规则")
                 return key, article, body, "", False
             except ExcludedArticle as exc:
                 return key, article, "", str(exc), True
@@ -146,37 +154,77 @@ class Pipeline:
         selected.sort(key=lambda item: item.published_at, reverse=True)
         return selected, duplicates
 
-    def analyze(self, articles: list[Article], report: RunReport, *, include_rejected: bool = False) -> list[Article]:
+    def analyze(
+        self,
+        articles: list[Article],
+        report: RunReport,
+        *,
+        job_id: str,
+        include_rejected: bool = False,
+    ) -> tuple[list[Article], bool]:
         if not articles:
-            return []
-        analyzer = ArkAnalyzer(self.http)
-
-        def evaluate(article: Article) -> tuple[Article, dict | None, str]:
-            last_error = ""
-            for attempt in range(3):
-                try:
-                    return article, analyzer.analyze(article), ""
-                except Exception as exc:
-                    last_error = str(exc)
-                    if attempt < 2:
-                        time.sleep(1.5 * (2**attempt))
-            return article, None, last_error
-
+            return [], True
+        analyzer = ArkAnalyzer()
+        state = StateStore()
         analyzed: list[Article] = []
-        workers = min(int(os.environ.get("AI_WORKERS", "4")), max(1, len(articles)))
-        with ThreadPoolExecutor(max_workers=workers) as pool:
-            futures = [pool.submit(evaluate, article) for article in articles]
-            for future in as_completed(futures):
-                article, result, error = future.result()
-                if error:
+        ordered = sorted(articles, key=lambda item: (item.source, item.published_at, item.url))
+        manifest = [content_hash(article) for article in ordered]
+        state.save_progress(job_id, manifest, 0, None, "running")
+        complete = True
+        try:
+            for index, article in enumerate(ordered):
+                if time.monotonic() >= self.deadline:
                     source_result = next(value for value in report.sources.values() if value.source == article.source)
-                    source_result.errors.append(f"AI失败 {article.url}: {error}")
-                    continue
+                    source_result.errors.append(f"达到280分钟运行上限，已保存断点：{article.url}")
+                    state.save_progress(job_id, manifest, index, article.url, "time_limit")
+                    report.checkpoint_index = index
+                    report.pending_articles = len(ordered) - index
+                    complete = False
+                    break
+                state.save_progress(job_id, manifest, index, article.url, "running")
+                cache_key = manifest[index]
+                filter_evidence, summary_evidence = evidence_packets(article)
+                try:
+                    result = analyzer.analyze(
+                        article,
+                        filter_evidence,
+                        summary_evidence,
+                        cache_key,
+                        state,
+                    )
+                except (ArkRateLimitError, ArkAPIError) as exc:
+                    source_result = next(value for value in report.sources.values() if value.source == article.source)
+                    source_result.errors.append(f"AI失败 {article.url}: {exc}")
+                    state.save_progress(job_id, manifest, index, article.url, "waiting_retry")
+                    report.checkpoint_index = index
+                    report.pending_articles = len(ordered) - index
+                    complete = False
+                    break
+                except Exception as exc:
+                    source_result = next(value for value in report.sources.values() if value.source == article.source)
+                    source_result.errors.append(f"AI结果失败 {article.url}: {exc}")
+                    state.save_progress(job_id, manifest, index, article.url, "invalid_result")
+                    report.checkpoint_index = index
+                    report.pending_articles = len(ordered) - index
+                    complete = False
+                    break
                 report.ai_evaluated += 1
                 article.ai_result = result
-                if include_rejected or (result and result.get("valuable")):
+                if include_rejected or result.get("valuable"):
                     analyzed.append(article)
-        return analyzed
+                state.save_progress(job_id, manifest, index + 1, None, "running")
+            if complete:
+                state.save_progress(job_id, manifest, len(ordered), None, "complete")
+                report.checkpoint_index = len(ordered)
+                report.pending_articles = 0
+        finally:
+            report.filter_calls = analyzer.filter_calls
+            report.summary_calls = analyzer.summary_calls
+            report.cache_hits = analyzer.cache_hits
+            report.rate_limit_count = analyzer.rate_limit_count
+            report.retry_wait_seconds = analyzer.retry_wait_seconds
+            state.close()
+        return analyzed, complete
 
     @staticmethod
     def _record_source_stats(report: RunReport, all_valuable: list[Article]) -> None:
@@ -219,6 +267,7 @@ class Pipeline:
         dry_run: bool = False,
         collect_only: bool = False,
         backfill: bool = False,
+        max_articles: int = 0,
         report_path: Path = Path("run-report.json"),
     ) -> RunReport:
         report = RunReport(day.isoformat(), dry_run=dry_run, collect_only=collect_only, backfill=backfill)
@@ -230,6 +279,8 @@ class Pipeline:
             assert feishu is not None
             _, report.unchanged = self._prepare_backfill(report.sources, feishu)
         articles = self._pre_dedupe(self.fetch_bodies(report.sources))
+        if max_articles > 0:
+            articles = sorted(articles, key=lambda item: (item.source, item.url))[:max_articles]
         if not collect_only:
             if not backfill and not dry_run:
                 assert feishu is not None
@@ -241,7 +292,14 @@ class Pipeline:
                 ]
                 report.existing_duplicates = len(articles) - len(unseen_articles)
                 articles = unseen_articles
-            analyzed = self.analyze(articles, report, include_rejected=backfill)
+            mode = "backfill" if backfill else ("dry" if dry_run else "daily")
+            source_part = "-".join(sorted(self.adapters))
+            analyzed, analysis_complete = self.analyze(
+                articles,
+                report,
+                job_id=f"{day.isoformat()}:{mode}:{source_part}",
+                include_rejected=backfill,
+            )
             valuable = [article for article in analyzed if (article.ai_result or {}).get("valuable")]
             selected, report.event_duplicates = self._assign_statuses(valuable)
             rejected = [article for article in analyzed if not (article.ai_result or {}).get("valuable")]
@@ -249,7 +307,14 @@ class Pipeline:
                 article.record_status = "普通重复稿"
             self._record_source_stats(report, valuable)
             report.selected = len(selected)
-            if backfill and not dry_run:
+            lengths = [int((article.ai_result or {}).get("summary_chars", 0)) for article in selected]
+            lengths = [value for value in lengths if value]
+            if lengths:
+                report.summary_char_min = min(lengths)
+                report.summary_char_max = max(lengths)
+            if not analysis_complete:
+                pass  # Never write a partial daily report or partial backfill.
+            elif backfill and not dry_run:
                 assert feishu is not None
                 update_articles = valuable + rejected
                 updated, failed = feishu.update(update_articles)

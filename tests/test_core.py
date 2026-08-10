@@ -1,15 +1,18 @@
 from datetime import date
 
 from personal_growth.feishu import FeishuBitable
-from personal_growth.ai import ArkAnalyzer
+from personal_growth.ai import ArkAnalyzer, ArkRateLimitError
+from personal_growth.evidence import effective_chars, evidence_packets
 from personal_growth.models import Article
 from personal_growth.pipeline import Pipeline
+from personal_growth.state import StateStore
 from personal_growth.text import (
     SHANGHAI,
     from_epoch,
     is_obvious_exclusion,
     normalize_title,
     normalize_url,
+    parse_datetime,
     parse_json_object,
     split_long_text,
     target_bounds,
@@ -26,6 +29,11 @@ def test_target_bounds_are_shanghai_natural_day():
 def test_epoch_milliseconds_and_seconds_match():
     assert from_epoch(1786195964) == from_epoch(1786195964000)
     assert from_epoch(1786195964).tzinfo == SHANGHAI
+
+
+def test_parse_datetime_accepts_dotnet_seven_digit_fraction():
+    parsed = parse_datetime("2026-08-10T18:39:18.6830000+08:00")
+    assert parsed.isoformat() == "2026-08-10T18:39:18.683000+08:00"
 
 
 def test_normalization_and_obvious_exclusions():
@@ -64,29 +72,95 @@ def test_event_group_uses_quality_and_keeps_real_increment():
     assert duplicates == 0
 
 
-def test_ai_validation_rejects_short_core_content():
-    result = {
-        "candidate": True,
-        "exclusion_reason": "",
-        "core_facts": ["短事实一", "短事实二", "短事实三"],
-        "key_numbers": [],
-        "impact": "这是一段长度足够通过单字段校验的影响判断，但全部结构组合后依然明显不足三百字，因此必须触发整体长度校验并要求重新生成。",
-        "actions": ["采取行动"],
-        "topics": ["人工智能"],
-        "category": "科技与AI",
-        "event_key": "公司发布新模型带来变化",
-        "unique_points": [],
-        "scores": {
-            "importance": 4, "information_gain": 4, "social_impact": 3,
-            "actionability": 3, "evidence_density": 4,
-        },
-    }
+def test_evidence_packets_cover_sections_and_stay_bounded():
+    article = Article("虎嗅", "公司调整欧洲业务", "https://example.com/1", from_epoch(1786195964))
+    article.body = "\n".join(
+        f"第{i}部分，公司在2026年调整欧洲市场业务，收入增长{i}%，这将影响供应链和企业决策。"
+        for i in range(1, 80)
+    )
+    filter_evidence, summary_evidence = evidence_packets(article)
+    assert 900 <= len(filter_evidence) <= 1200
+    assert 1600 <= len(summary_evidence) <= 2400
+    assert "E001" in filter_evidence
+    assert "第79部分" in summary_evidence
+
+
+def test_filter_validation_and_deep_article_protection():
+    raw = '{"status":"入选","reason":"有独家数据","event_key":"公司调整欧洲业务",' \
+          '"topics":["跨境"],"category":"全球与出海","unique_points":["独家数据"],' \
+          '"scores":{"importance":3,"information_gain":4,"social_impact":2,"actionability":2,"evidence_density":3}}'
+    result = ArkAnalyzer._validate_filter(raw)
+    assert result["valuable"] is True
+    assert result["score_total"] == 14
+
+
+def test_summary_requires_three_paragraphs_and_300_to_500_chars():
+    summary = "甲" * 105 + "\n\n" + "乙" * 105 + "\n\n" + "丙" * 105
+    assert effective_chars(summary) == 315
+    assert ArkAnalyzer.validate_summary(summary, "原文没有数字") == summary
     try:
-        ArkAnalyzer.validate_result(result)
+        ArkAnalyzer.validate_summary("甲" * 299, "原文")
     except ValueError as exc:
-        assert "长度不合格" in str(exc)
+        assert "字数不合格" in str(exc)
     else:
         raise AssertionError("短摘要应被拒绝")
+
+
+def test_state_cache_persists_stages_and_progress(tmp_path):
+    store = StateStore(str(tmp_path / "state.sqlite"))
+    store.put_stage("hash", "filter", "v1", {"status": "淘汰"})
+    store.save_progress("job", ["hash"], 0, "a1", "waiting_retry")
+    store.close()
+    reopened = StateStore(str(tmp_path / "state.sqlite"))
+    assert reopened.get_stage("hash", "filter", "v1") == {"status": "淘汰"}
+    assert reopened.get_progress("job")["current_article_id"] == "a1"
+    reopened.close()
+
+
+def test_ark_429_exposes_original_error(monkeypatch):
+    monkeypatch.setenv("ARK_API_KEY", "test")
+    monkeypatch.setenv("ARK_MIN_INTERVAL_SECONDS", "0")
+    monkeypatch.setenv("ARK_MAX_429_RETRIES", "0")
+    analyzer = ArkAnalyzer()
+
+    class Response:
+        status_code = 429
+        text = '{"error":{"code":"RateLimitExceeded","message":"TPM exceeded"}}'
+        headers = {"Retry-After": "60"}
+
+    monkeypatch.setattr(analyzer.session, "post", lambda *args, **kwargs: Response())
+    try:
+        analyzer._request("system", "user", 20, "filter")
+    except ArkRateLimitError as exc:
+        assert "TPM exceeded" in exc.detail
+        assert exc.retry_after == 60
+    else:
+        raise AssertionError("429必须抛出可观测错误")
+
+
+def test_analyzer_uses_stage_cache_without_api_call(monkeypatch, tmp_path):
+    monkeypatch.setenv("ARK_API_KEY", "test")
+    monkeypatch.setenv("ARK_MIN_INTERVAL_SECONDS", "0")
+    analyzer = ArkAnalyzer()
+    store = StateStore(str(tmp_path / "state.sqlite"))
+    article = Article("虎嗅", "公司调整业务", "https://example.com/2", from_epoch(1786195964))
+    filter_result = {
+        "status": "入选", "valuable": True, "reason": "有增量", "event_key": "公司调整业务",
+        "topics": ["商业"], "category": "商业与公司", "unique_points": ["独家变化"],
+        "score_total": 16,
+        "scores": {"importance": 3, "information_gain": 4, "social_impact": 3, "actionability": 3, "evidence_density": 3},
+    }
+    summary = "甲" * 105 + "\n\n" + "乙" * 105 + "\n\n" + "丙" * 105
+    store.put_stage("hash", "filter", f"{analyzer.model}:filter_v2", filter_result)
+    store.put_stage(
+        "hash", "summary", f"{analyzer.model}:summary_v2",
+        {"status": "入选", "core_content": summary, "summary_chars": 315},
+    )
+    monkeypatch.setattr(analyzer, "_request", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("不应调用API")))
+    result = analyzer.analyze(article, "证据", "E001 证据", "hash", store)
+    assert result["valuable"] is True
+    assert analyzer.cache_hits == 2
+    store.close()
 
 
 def test_feishu_hyperlink_shape_without_initializing_client():

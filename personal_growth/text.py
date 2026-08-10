@@ -47,6 +47,8 @@ def from_epoch(value: int | float | str) -> datetime:
 
 def parse_datetime(value: str) -> datetime:
     value = value.strip().replace("Z", "+00:00")
+    # Some .NET feeds emit seven fractional digits; Python supports six.
+    value = re.sub(r"(?<=\d)\.(\d{6})\d+(?=(?:[+-]\d{2}:?\d{2})?$)", r".\1", value)
     parsed = datetime.fromisoformat(value)
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=SHANGHAI)

@@ -54,6 +54,15 @@ class RunReport:
     updated: int = 0
     update_failed: int = 0
     unchanged: int = 0
+    filter_calls: int = 0
+    summary_calls: int = 0
+    cache_hits: int = 0
+    rate_limit_count: int = 0
+    retry_wait_seconds: float = 0.0
+    pending_articles: int = 0
+    checkpoint_index: int = 0
+    summary_char_min: int = 0
+    summary_char_max: int = 0
 
     @property
     def partial(self) -> bool:
@@ -96,4 +105,13 @@ class RunReport:
             "updated": self.updated,
             "update_failed": self.update_failed,
             "unchanged": self.unchanged,
+            "filter_calls": self.filter_calls,
+            "summary_calls": self.summary_calls,
+            "cache_hits": self.cache_hits,
+            "rate_limit_count": self.rate_limit_count,
+            "retry_wait_seconds": round(self.retry_wait_seconds, 1),
+            "pending_articles": self.pending_articles,
+            "checkpoint_index": self.checkpoint_index,
+            "summary_char_min": self.summary_char_min,
+            "summary_char_max": self.summary_char_max,
         }

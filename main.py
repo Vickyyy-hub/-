@@ -17,6 +17,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dry-run", action="store_true", help="执行采集和AI，但不写飞书")
     parser.add_argument("--collect-only", action="store_true", help="只采集并验证正文，不调用AI、不写飞书")
     parser.add_argument("--backfill-existing", action="store_true", help="按指定日期原地回填已有飞书记录，不新增")
+    parser.add_argument("--max-articles", type=int, default=0, help="仅处理前N篇；0表示不限制，主要用于验收")
     return parser.parse_args()
 
 
@@ -34,6 +35,7 @@ def main() -> int:
         dry_run=args.dry_run,
         collect_only=args.collect_only,
         backfill=args.backfill_existing,
+        max_articles=max(0, args.max_articles),
     )
     print(json.dumps(report.to_dict(), ensure_ascii=False, indent=2))
     if report.partial:
