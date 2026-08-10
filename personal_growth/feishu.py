@@ -17,7 +17,7 @@ class FeishuBitable:
         "记录状态": {"field_name": "记录状态", "type": 3},
     }
 
-    def __init__(self, http: HttpClient) -> None:
+    def __init__(self, http: HttpClient, *, read_only: bool = False) -> None:
         self.http = http
         self.app_id = os.environ.get("FEISHU_APP_ID", "")
         self.app_secret = os.environ.get("FEISHU_APP_SECRET", "")
@@ -28,7 +28,10 @@ class FeishuBitable:
         self.token = self._tenant_token()
         self.headers = {"Authorization": f"Bearer {self.token}", "Content-Type": "application/json"}
         self.field_types = self._field_types()
-        self.ensure_fields()
+        if read_only:
+            self._validate_required_fields()
+        else:
+            self.ensure_fields()
 
     def _tenant_token(self) -> str:
         payload = self.http.post(
@@ -56,6 +59,12 @@ class FeishuBitable:
             if name not in self.field_types:
                 self._api("POST", path, json=spec)
         self.field_types = self._field_types()
+        self._validate_required_fields()
+
+    def _validate_required_fields(self) -> None:
+        missing = sorted(set(self.required_fields) - set(self.field_types))
+        if missing:
+            raise RuntimeError(f"飞书缺少字段：{missing}")
         wrong = {
             name: (self.field_types.get(name), spec["type"])
             for name, spec in self.required_fields.items()
@@ -63,6 +72,14 @@ class FeishuBitable:
         }
         if wrong:
             raise RuntimeError(f"飞书字段类型不匹配：{wrong}")
+
+    def read_only_status(self) -> dict[str, Any]:
+        records = self.list_records()
+        return {
+            "readable": True,
+            "record_count": len(records),
+            "required_fields": sorted(self.required_fields),
+        }
 
     @staticmethod
     def _extract_text(value: Any) -> str:

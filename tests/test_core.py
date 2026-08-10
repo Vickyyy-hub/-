@@ -232,3 +232,18 @@ def test_feishu_hyperlink_shape_without_initializing_client():
         "link": "https://example.com",
     }
     assert client._field_value("内容主题", "摘要") == ["摘要"]
+
+
+def test_feishu_read_only_mode_never_creates_fields(monkeypatch):
+    monkeypatch.setenv("FEISHU_APP_ID", "app")
+    monkeypatch.setenv("FEISHU_APP_SECRET", "secret")
+    monkeypatch.setattr(FeishuBitable, "_tenant_token", lambda self: "token")
+    field_types = {name: spec["type"] for name, spec in FeishuBitable.required_fields.items()}
+    monkeypatch.setattr(FeishuBitable, "_field_types", lambda self: field_types)
+    monkeypatch.setattr(
+        FeishuBitable,
+        "ensure_fields",
+        lambda self: (_ for _ in ()).throw(AssertionError("只读模式不得创建字段")),
+    )
+    client = FeishuBitable(object(), read_only=True)
+    assert client.field_types == field_types

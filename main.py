@@ -6,6 +6,8 @@ import sys
 from datetime import date, datetime, timedelta
 
 from personal_growth.adapters import ADAPTERS
+from personal_growth.feishu import FeishuBitable
+from personal_growth.http import HttpClient
 from personal_growth.pipeline import Pipeline
 from personal_growth.text import SHANGHAI
 
@@ -18,11 +20,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--collect-only", action="store_true", help="只采集并验证正文，不调用AI、不写飞书")
     parser.add_argument("--backfill-existing", action="store_true", help="按指定日期原地回填已有飞书记录，不新增")
     parser.add_argument("--max-articles", type=int, default=0, help="仅处理前N篇；0表示不限制，主要用于验收")
+    parser.add_argument("--check-feishu", action="store_true", help="只读验证飞书权限和字段，不写入")
     return parser.parse_args()
 
 
 def main() -> int:
     args = parse_args()
+    if args.check_feishu:
+        status = FeishuBitable(HttpClient(), read_only=True).read_only_status()
+        print(json.dumps(status, ensure_ascii=False, indent=2))
+        return 0
     target = date.fromisoformat(args.date) if args.date else datetime.now(SHANGHAI).date() - timedelta(days=1)
     sources = list(ADAPTERS) if args.sources == "all" else [item.strip() for item in args.sources.split(",") if item.strip()]
     unknown = set(sources) - set(ADAPTERS)
