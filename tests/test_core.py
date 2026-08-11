@@ -1,9 +1,18 @@
+import time
 from datetime import date
 
 from personal_growth.feishu import FeishuBitable
-from personal_growth.ai import ArkAnalyzer, ArkRateLimitError
+from personal_growth.ai import (
+    FILTER_STAGE,
+    FILTER_VERSION,
+    SUMMARY_STAGE,
+    SUMMARY_VERSION,
+    ArkAPIError,
+    ArkAnalyzer,
+    ArkRateLimitError,
+)
 from personal_growth.evidence import effective_chars, evidence_packets
-from personal_growth.models import Article
+from personal_growth.models import Article, RunReport, SourceResult
 from personal_growth.pipeline import Pipeline
 from personal_growth.state import StateStore
 from personal_growth.text import (
@@ -84,6 +93,81 @@ def test_manual_limit_samples_sources_round_robin():
     assert all(sum(item.source == source for item in sampled) == 2 for source in {"虎嗅", "少数派", "界面新闻"})
 
 
+def test_daily_analysis_order_round_robins_all_six_sources():
+    sources = Pipeline.ANALYSIS_SOURCE_ORDER
+    items = [
+        Article(source, f"{source}-{index}", f"https://example.com/{source}/{index}", from_epoch(1786195964 + index))
+        for source in reversed(sources)
+        for index in range(3)
+    ]
+    ordered = Pipeline._analysis_order(items)
+    assert [item.source for item in ordered[:6]] == list(sources)
+    assert all(sum(item.source == source for item in ordered[:12]) == 2 for source in sources)
+    for source in sources:
+        published = [item.published_at for item in ordered if item.source == source]
+        assert published == sorted(published, reverse=True)
+
+
+def test_interrupted_analysis_resumes_from_same_round_robin_manifest(monkeypatch, tmp_path):
+    monkeypatch.setenv("STATE_DB", str(tmp_path / "state.sqlite"))
+    sources = Pipeline.ANALYSIS_SOURCE_ORDER
+    articles = [
+        Article(source, f"{source}-{index}", f"https://example.com/{source}/{index}", from_epoch(1786195964 + index), body="正文" * 500)
+        for source in sources
+        for index in range(3)
+    ]
+    created = []
+
+    class FakeAnalyzer:
+        model = "test-model"
+
+        def __init__(self):
+            self.filter_calls = 0
+            self.summary_calls = 0
+            self.cache_hits = 0
+            self.rate_limit_count = 0
+            self.retry_wait_seconds = 0.0
+            self.calls = []
+            created.append(self)
+
+        def analyze(self, article, filter_evidence, summary_evidence, cache_key, state):
+            self.calls.append(article.source)
+            if len(created) == 1 and len(self.calls) == 13:
+                raise ArkAPIError("模拟中断")
+            result = {
+                "status": "入选", "valuable": True, "reason": "有增量",
+                "event_key": article.title, "topics": ["商业"], "category": "商业与公司",
+                "unique_points": [article.title], "score_total": 16,
+                "scores": {"importance": 3, "information_gain": 4, "social_impact": 3, "actionability": 3, "evidence_density": 3},
+            }
+            summary = {"status": "入选", "core_content": "甲" * 105 + "\n\n" + "乙" * 105 + "\n\n" + "丙" * 105, "summary_chars": 315}
+            state.put_stage(cache_key, FILTER_STAGE, f"{self.model}:{FILTER_VERSION}", result)
+            state.put_stage(cache_key, SUMMARY_STAGE, f"{self.model}:{SUMMARY_VERSION}", summary)
+            return {**result, **summary}
+
+    monkeypatch.setattr("personal_growth.pipeline.ArkAnalyzer", FakeAnalyzer)
+    pipeline = object.__new__(Pipeline)
+    pipeline.deadline = time.monotonic() + 60
+
+    first = RunReport("2026-08-11")
+    first.sources = {source: SourceResult(source) for source in sources}
+    analyzed, complete = pipeline.analyze(articles, first, job_id="daily-six")
+    assert complete is False
+    assert len(analyzed) == 12
+    assert all(result.ai_processed == 2 for result in first.sources.values())
+    assert all(result.ai_pending == 1 for result in first.sources.values())
+
+    second = RunReport("2026-08-11")
+    second.sources = {source: SourceResult(source) for source in sources}
+    analyzed, complete = pipeline.analyze(articles, second, job_id="daily-six")
+    assert complete is True
+    assert len(analyzed) == 18
+    assert len(created[1].calls) == 6
+    assert all(result.ai_processed == 3 for result in second.sources.values())
+    assert all(result.ai_pending == 0 for result in second.sources.values())
+    assert all(result.cache_hits == 4 for result in second.sources.values())
+
+
 def test_evidence_packets_cover_sections_and_stay_bounded():
     article = Article("虎嗅", "公司调整欧洲业务", "https://example.com/1", from_epoch(1786195964))
     article.body = "\n".join(
@@ -145,15 +229,22 @@ def test_state_cache_persists_stages_and_progress(tmp_path):
 
 
 def test_report_exposes_summary_rejections():
-    from personal_growth.models import RunReport
-
     report = RunReport("2026-08-09", summary_rejected=2)
     assert report.to_dict()["summary_rejected"] == 2
 
 
-def test_cached_only_report_ignores_expected_source_gaps():
-    from personal_growth.models import RunReport, SourceResult
+def test_report_exposes_per_source_ai_progress():
+    report = RunReport("2026-08-11")
+    report.sources = {
+        "huxiu": SourceResult("虎嗅", ai_processed=3, ai_pending=2, cache_hits=4),
+    }
+    source = report.to_dict()["sources"]["huxiu"]
+    assert source["ai_processed"] == 3
+    assert source["ai_pending"] == 2
+    assert source["cache_hits"] == 4
 
+
+def test_cached_only_report_ignores_expected_source_gaps():
     report = RunReport("2026-08-10", cached_only=True, truncated_by_user=True)
     report.sources = {"sspai": SourceResult("少数派", body_failed=1, errors=["正文为空"])}
     assert report.partial is False

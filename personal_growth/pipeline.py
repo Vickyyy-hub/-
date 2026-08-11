@@ -28,6 +28,8 @@ from .text import clean_text, normalize_title, normalize_url, similarity
 
 
 class Pipeline:
+    ANALYSIS_SOURCE_ORDER = ("虎嗅", "少数派", "界面新闻", "IT之家", "钛媒体", "36氪")
+
     def __init__(self, source_keys: list[str]) -> None:
         self.http = HttpClient(timeout=int(os.environ.get("HTTP_TIMEOUT", "35")))
         self.deadline = time.monotonic() + int(os.environ.get("MAX_RUNTIME_MINUTES", "280")) * 60
@@ -109,25 +111,58 @@ class Pipeline:
                 chosen[key] = article
         return list(chosen.values())
 
-    @staticmethod
-    def _sample_articles(articles: list[Article], limit: int) -> list[Article]:
-        if limit <= 0 or len(articles) <= limit:
-            return articles
+    @classmethod
+    def _analysis_order(cls, articles: Iterable[Article]) -> list[Article]:
         groups: dict[str, list[Article]] = defaultdict(list)
         for article in articles:
             groups[article.source].append(article)
         for items in groups.values():
             items.sort(key=lambda item: (item.published_at, item.url), reverse=True)
-        sampled: list[Article] = []
-        while len(sampled) < limit:
+
+        known = [source for source in cls.ANALYSIS_SOURCE_ORDER if source in groups]
+        unknown = sorted(set(groups) - set(known))
+        source_order = known + unknown
+        ordered: list[Article] = []
+        while True:
             progressed = False
-            for source in sorted(groups):
-                if groups[source] and len(sampled) < limit:
-                    sampled.append(groups[source].pop(0))
+            for source in source_order:
+                if groups[source]:
+                    ordered.append(groups[source].pop(0))
                     progressed = True
             if not progressed:
                 break
-        return sampled
+        return ordered
+
+    @classmethod
+    def _sample_articles(cls, articles: list[Article], limit: int) -> list[Article]:
+        ordered = cls._analysis_order(articles)
+        if limit <= 0:
+            return ordered
+        return ordered[:limit]
+
+    @staticmethod
+    def _cached_ai_result(
+        state: StateStore,
+        analyzer: ArkAnalyzer,
+        cache_key: str,
+    ) -> tuple[dict | None, int]:
+        filter_result = state.get_stage(
+            cache_key,
+            FILTER_STAGE,
+            f"{analyzer.model}:{FILTER_VERSION}",
+        )
+        if filter_result is None:
+            return None, 0
+        if not filter_result.get("valuable"):
+            return filter_result, 1
+        summary_result = state.get_stage(
+            cache_key,
+            SUMMARY_STAGE,
+            f"{analyzer.model}:{SUMMARY_VERSION}",
+        )
+        if summary_result is None:
+            return None, 0
+        return {**filter_result, **summary_result}, 2
 
     @staticmethod
     def _quality(article: Article) -> tuple[int, int, int, int]:
@@ -196,33 +231,56 @@ class Pipeline:
         analyzer = ArkAnalyzer()
         state = StateStore()
         analyzed: list[Article] = []
-        ordered = sorted(articles, key=lambda item: (item.source, item.published_at, item.url))
+        ordered = self._analysis_order(articles)
         manifest = [content_hash(article) for article in ordered]
-        state.save_progress(job_id, manifest, 0, None, "running")
+        source_by_name = {value.source: value for value in report.sources.values()}
+        for article in ordered:
+            source_by_name[article.source].ai_pending += 1
+
+        resume_index = 0
+        previous = state.get_progress(job_id)
+        if previous:
+            try:
+                previous_manifest = json.loads(previous["manifest_json"])
+                previous_index = int(previous["next_index"])
+            except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+                previous_manifest = []
+                previous_index = 0
+            if previous_manifest == manifest and 0 <= previous_index <= len(ordered):
+                resume_index = previous_index
+        state.save_progress(job_id, manifest, resume_index, None, "running")
         complete = True
         try:
             for index, article in enumerate(ordered):
+                source_result = source_by_name[article.source]
                 if time.monotonic() >= self.deadline:
-                    source_result = next(value for value in report.sources.values() if value.source == article.source)
                     source_result.errors.append(f"达到280分钟运行上限，已保存断点：{article.url}")
                     state.save_progress(job_id, manifest, index, article.url, "time_limit")
                     report.checkpoint_index = index
                     report.pending_articles = len(ordered) - index
                     complete = False
                     break
-                state.save_progress(job_id, manifest, index, article.url, "running")
                 cache_key = manifest[index]
                 filter_evidence, summary_evidence = evidence_packets(article)
+                cache_before = analyzer.cache_hits
                 try:
-                    result = analyzer.analyze(
-                        article,
-                        filter_evidence,
-                        summary_evidence,
-                        cache_key,
-                        state,
-                    )
+                    if index < resume_index:
+                        result, stage_hits = self._cached_ai_result(state, analyzer, cache_key)
+                        analyzer.cache_hits += stage_hits
+                        if result is None:
+                            resume_index = index
+                    else:
+                        result = None
+                    if result is None:
+                        state.save_progress(job_id, manifest, index, article.url, "running")
+                        result = analyzer.analyze(
+                            article,
+                            filter_evidence,
+                            summary_evidence,
+                            cache_key,
+                            state,
+                        )
                 except (ArkRateLimitError, ArkAPIError) as exc:
-                    source_result = next(value for value in report.sources.values() if value.source == article.source)
                     source_result.errors.append(f"AI失败 {article.url}: {exc}")
                     state.save_progress(job_id, manifest, index, article.url, "waiting_retry")
                     report.checkpoint_index = index
@@ -230,7 +288,6 @@ class Pipeline:
                     complete = False
                     break
                 except Exception as exc:
-                    source_result = next(value for value in report.sources.values() if value.source == article.source)
                     source_result.errors.append(f"AI结果失败 {article.url}: {exc}")
                     state.save_progress(job_id, manifest, index, article.url, "invalid_result")
                     report.checkpoint_index = index
@@ -238,9 +295,11 @@ class Pipeline:
                     complete = False
                     break
                 report.ai_evaluated += 1
+                source_result.ai_processed += 1
+                source_result.ai_pending -= 1
+                source_result.cache_hits += analyzer.cache_hits - cache_before
                 article.ai_result = result
                 if str(result.get("reason", "")).startswith("摘要"):
-                    source_result = next(value for value in report.sources.values() if value.source == article.source)
                     source_result.warnings.append(
                         f"摘要淘汰 {article.url}: {result.get('reason')}"
                     )
@@ -273,7 +332,11 @@ class Pipeline:
                 source.event_duplicates += 1
         huxiu = next((value for value in report.sources.values() if value.source == "虎嗅"), None)
         if (
-            huxiu and huxiu.body_success > 0 and not huxiu.errors
+            huxiu and huxiu.ai_pending > 0 and huxiu.ai_processed == 0
+        ):
+            huxiu.errors.append("虎嗅存在待分析正文但AI处理数为0，六站轮询或断点恢复异常")
+        elif (
+            huxiu and huxiu.ai_processed > 0 and not huxiu.errors
             and huxiu.selected_main + huxiu.selected_incremental == 0
         ):
             huxiu.warnings.append("虎嗅正文读取成功但入选为0，请检查评分、正文质量或跨站去重")

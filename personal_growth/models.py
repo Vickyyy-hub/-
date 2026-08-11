@@ -30,6 +30,9 @@ class SourceResult:
     body_success: int = 0
     body_failed: int = 0
     excluded: int = 0
+    ai_processed: int = 0
+    ai_pending: int = 0
+    cache_hits: int = 0
     selected_main: int = 0
     selected_incremental: int = 0
     event_duplicates: int = 0
@@ -90,6 +93,9 @@ class RunReport:
                 "body_success": result.body_success,
                 "body_failed": result.body_failed,
                 "excluded": result.excluded,
+                "ai_processed": result.ai_processed,
+                "ai_pending": result.ai_pending,
+                "cache_hits": result.cache_hits,
                 "selected_main": result.selected_main,
                 "selected_incremental": result.selected_incremental,
                 "event_duplicates": result.event_duplicates,
