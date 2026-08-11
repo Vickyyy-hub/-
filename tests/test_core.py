@@ -234,6 +234,43 @@ def test_feishu_hyperlink_shape_without_initializing_client():
     assert client._field_value("内容主题", "摘要") == ["摘要"]
 
 
+def test_feishu_record_contains_daily_date():
+    client = object.__new__(FeishuBitable)
+    client.field_types = {
+        "标题": 1,
+        "来源网站": 15,
+        "发布日期": 5,
+        "日报日期": 5,
+    }
+    article = Article("虎嗅", "测试", "https://example.com/3", from_epoch(1786195964))
+    article.daily_date = date(2026, 8, 10)
+    fields = client.record_fields(article)
+    assert fields["日报日期"] == FeishuBitable._date_timestamp(date(2026, 8, 10))
+    assert fields["发布日期"] == int(article.published_at.timestamp() * 1000)
+
+
+def test_daily_date_backfill_uses_published_date_without_ai(monkeypatch):
+    client = object.__new__(FeishuBitable)
+    client.app_token = "app"
+    client.table_id = "table"
+    published = FeishuBitable._date_timestamp(date(2026, 8, 8))
+    before = [
+        {"record_id": "r1", "fields": {"发布日期": published}},
+        {"record_id": "r2", "fields": {"发布日期": None}},
+    ]
+    after = [
+        {"record_id": "r1", "fields": {"发布日期": published, "日报日期": published}},
+        {"record_id": "r2", "fields": {"发布日期": None}},
+    ]
+    reads = iter([before, after])
+    monkeypatch.setattr(client, "list_records", lambda: next(reads))
+    calls = []
+    monkeypatch.setattr(client, "_api", lambda method, path, **kwargs: calls.append(kwargs["json"]) or {"data": {"records": [{"record_id": "r1"}]}})
+    updated, failed, skipped = client.backfill_daily_dates()
+    assert (updated, failed, skipped) == (1, 0, 1)
+    assert calls[0]["records"][0]["fields"]["日报日期"] == published
+
+
 def test_feishu_read_only_mode_never_creates_fields(monkeypatch):
     monkeypatch.setenv("FEISHU_APP_ID", "app")
     monkeypatch.setenv("FEISHU_APP_SECRET", "secret")

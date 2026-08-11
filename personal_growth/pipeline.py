@@ -305,6 +305,9 @@ class Pipeline:
         if not collect_only and (backfill or not dry_run):
             feishu = FeishuBitable(self.http)
         report.sources = self.discover(day)
+        for source_result in report.sources.values():
+            for article in source_result.articles:
+                article.daily_date = day
         if backfill:
             assert feishu is not None
             _, report.unchanged = self._prepare_backfill(report.sources, feishu)

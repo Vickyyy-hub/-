@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any
 
 
@@ -11,6 +11,7 @@ class Article:
     title: str
     url: str
     published_at: datetime
+    daily_date: date | None = None
     summary: str = ""
     body: str = ""
     author: str = ""

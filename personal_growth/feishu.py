@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import os
+from datetime import date, datetime, time
 from typing import Any, Iterable
 
 from .http import HttpClient
 from .models import Article
-from .text import normalize_title, normalize_url
+from .text import SHANGHAI, normalize_title, normalize_url
 
 
 class FeishuBitable:
@@ -14,6 +15,7 @@ class FeishuBitable:
         "核心干货": {"field_name": "核心干货", "type": 1},
         "来源名称": {"field_name": "来源名称", "type": 3},
         "发布日期": {"field_name": "发布日期", "type": 5, "property": {"date_formatter": "yyyy-MM-dd"}},
+        "日报日期": {"field_name": "日报日期", "type": 5, "property": {"date_formatter": "yyyy-MM-dd"}},
         "记录状态": {"field_name": "记录状态", "type": 3},
     }
 
@@ -135,6 +137,10 @@ class FeishuBitable:
             return "、".join(value)
         return value
 
+    @staticmethod
+    def _date_timestamp(value: date) -> int:
+        return int(datetime.combine(value, time.min, tzinfo=SHANGHAI).timestamp() * 1000)
+
     def record_fields(self, article: Article) -> dict[str, Any]:
         ai = article.ai_result or {}
         fields = {
@@ -145,6 +151,7 @@ class FeishuBitable:
             "核心干货": str(ai.get("core_content", ""))[:100_000],
             "来源名称": article.source,
             "发布日期": int(article.published_at.timestamp() * 1000),
+            "日报日期": self._date_timestamp(article.daily_date or article.published_at.astimezone(SHANGHAI).date()),
             "记录状态": article.record_status or "主稿",
         }
         return {name: value for name, value in fields.items() if name in self.field_types}
@@ -181,6 +188,53 @@ class FeishuBitable:
                 print(f"[飞书] 批量更新失败（{len(batch)} 条）：{exc}")
                 failed += len(batch)
         return updated, failed
+
+    def backfill_daily_dates(self) -> tuple[int, int, int]:
+        records = self.list_records()
+        updates: list[dict[str, Any]] = []
+        skipped = 0
+        for record in records:
+            fields = record.get("fields") or {}
+            if fields.get("日报日期") not in (None, ""):
+                continue
+            published = fields.get("发布日期")
+            try:
+                published_ms = int(published)
+                published_day = datetime.fromtimestamp(published_ms / 1000, tz=SHANGHAI).date()
+            except (TypeError, ValueError, OverflowError, OSError):
+                skipped += 1
+                continue
+            updates.append(
+                {
+                    "record_id": record.get("record_id", ""),
+                    "fields": {"日报日期": self._date_timestamp(published_day)},
+                }
+            )
+
+        updated = 0
+        failed = 0
+        path = f"/bitable/v1/apps/{self.app_token}/tables/{self.table_id}/records/batch_update"
+        for index in range(0, len(updates), 100):
+            batch = [item for item in updates[index : index + 100] if item["record_id"]]
+            if not batch:
+                continue
+            try:
+                payload = self._api("POST", path, json={"records": batch})
+                updated += len(payload["data"].get("records", []))
+            except Exception as exc:
+                print(f"[飞书] 日报日期回填失败（{len(batch)} 条）：{exc}")
+                failed += len(batch)
+
+        if updated:
+            expected = {item["record_id"] for item in updates if item["record_id"]}
+            actual = {
+                record.get("record_id", "")
+                for record in self.list_records()
+                if (record.get("fields") or {}).get("日报日期") not in (None, "")
+            }
+            failed = max(failed, len(expected - actual))
+            updated = max(0, len(expected) - len(expected - actual))
+        return updated, failed, skipped
 
     def verify_urls(self, articles: Iterable[Article]) -> set[str]:
         expected = {normalize_url(article.url) for article in articles}

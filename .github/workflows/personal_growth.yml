@@ -2,9 +2,7 @@ name: 个人成长六站每日资讯
 
 on:
   schedule:
-    - cron: "7 0 * * *"
-    - cron: "37 0 * * *"
-    - cron: "7 1 * * *"
+    - cron: "7,22,37,52 0,1 * * *"
   workflow_dispatch:
     inputs:
       target_date:
@@ -51,6 +49,11 @@ on:
         required: false
         default: false
         type: boolean
+      backfill_daily_dates:
+        description: "按发布日期回填日报日期，不调用AI"
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -77,18 +80,6 @@ jobs:
       MAX_RUNTIME_MINUTES: "280"
       PYTHONUNBUFFERED: "1"
     steps:
-      - name: 拉取代码
-        uses: actions/checkout@v4
-
-      - name: 安装 Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-          cache: pip
-
-      - name: 安装依赖
-        run: python -m pip install -r requirements.txt
-
       - name: 确定目标日期
         id: target
         shell: bash
@@ -99,7 +90,9 @@ jobs:
             target_date="$(TZ=Asia/Shanghai date -d yesterday +%F)"
           fi
           echo "date=$target_date" >> "$GITHUB_OUTPUT"
-          if [[ "${{ inputs.backfill_existing }}" == "true" ]]; then
+          if [[ "${{ inputs.backfill_daily_dates }}" == "true" ]]; then
+            mode="date-backfill"
+          elif [[ "${{ inputs.backfill_existing }}" == "true" ]]; then
             mode="backfill"
           elif [[ "${{ inputs.dry_run }}" == "true" ]]; then
             mode="dry"
@@ -108,8 +101,32 @@ jobs:
           fi
           echo "mode=$mode" >> "$GITHUB_OUTPUT"
 
+      - name: 检查当日完成标记
+        id: completed
+        if: ${{ inputs.backfill_existing != true && inputs.backfill_daily_dates != true }}
+        uses: actions/cache/restore@v4
+        with:
+          path: .daily-complete
+          key: personal-growth-complete-${{ steps.target.outputs.date }}
+
+      - name: 拉取代码
+        if: ${{ inputs.force == true || inputs.backfill_existing == true || inputs.backfill_daily_dates == true || steps.completed.outputs.cache-hit != 'true' }}
+        uses: actions/checkout@v4
+
+      - name: 安装 Python
+        if: ${{ inputs.force == true || inputs.backfill_existing == true || inputs.backfill_daily_dates == true || steps.completed.outputs.cache-hit != 'true' }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: 安装依赖
+        if: ${{ inputs.force == true || inputs.backfill_existing == true || inputs.backfill_daily_dates == true || steps.completed.outputs.cache-hit != 'true' }}
+        run: python -m pip install -r requirements.txt
+
       - name: 恢复分析断点
         id: analysis_state
+        if: ${{ inputs.backfill_daily_dates != true && inputs.feishu_check_only != true && (inputs.force == true || inputs.backfill_existing == true || steps.completed.outputs.cache-hit != 'true') }}
         uses: actions/cache/restore@v4
         with:
           path: .state
@@ -117,20 +134,13 @@ jobs:
           restore-keys: |
             news-state-${{ steps.target.outputs.date }}-${{ steps.target.outputs.mode }}-
 
-      - name: 检查当日完成标记
-        id: completed
-        if: ${{ inputs.backfill_existing != true }}
-        uses: actions/cache/restore@v4
-        with:
-          path: .daily-complete
-          key: personal-growth-complete-${{ steps.target.outputs.date }}
-
       - name: 单元测试
+        if: ${{ inputs.force == true || inputs.backfill_existing == true || inputs.backfill_daily_dates == true || steps.completed.outputs.cache-hit != 'true' }}
         run: pytest -q
 
       - name: 执行每日任务
         id: run_task
-        if: ${{ inputs.force == true || inputs.backfill_existing == true || steps.completed.outputs.cache-hit != 'true' }}
+        if: ${{ inputs.force == true || inputs.backfill_existing == true || inputs.backfill_daily_dates == true || steps.completed.outputs.cache-hit != 'true' }}
         shell: bash
         run: |
           args=(--sources "${{ inputs.sources || 'all' }}")
@@ -150,31 +160,65 @@ jobs:
           if [[ "${{ inputs.feishu_check_only }}" == "true" ]]; then
             args=(--check-feishu)
           fi
+          if [[ "${{ inputs.backfill_daily_dates }}" == "true" ]]; then
+            args=(--backfill-daily-dates)
+          fi
           python main.py "${args[@]}"
 
+      - name: 验证完整日报
+        id: validate
+        if: ${{ steps.run_task.outcome == 'success' && inputs.dry_run != true && inputs.collect_only != true && inputs.backfill_existing != true && inputs.backfill_daily_dates != true && inputs.feishu_check_only != true && (inputs.sources == '' || inputs.sources == 'all') && (inputs.max_articles == '' || inputs.max_articles == '0') }}
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          report = json.loads(Path("run-report.json").read_text(encoding="utf-8"))
+          errors = []
+          if report.get("partial"):
+              errors.append("partial=true")
+          if int(report.get("write_failed", 0)):
+              errors.append(f"write_failed={report['write_failed']}")
+          sources = report.get("sources") or {}
+          if len(sources) != 6:
+              errors.append(f"sources={len(sources)}")
+          incomplete = [name for name, data in sources.items() if not data.get("coverage_complete")]
+          if incomplete:
+              errors.append("coverage_incomplete=" + ",".join(incomplete))
+          if int(report.get("selected", 0)):
+              minimum = int(report.get("summary_char_min", 0))
+              maximum = int(report.get("summary_char_max", 0))
+              if minimum < 300 or maximum > 500:
+                  errors.append(f"summary_chars={minimum}-{maximum}")
+          if errors:
+              raise SystemExit("完整日报验收失败：" + "; ".join(errors))
+          print("完整日报验收通过")
+          PY
+
       - name: 保存分析断点
-        if: ${{ always() && steps.run_task.outcome != 'skipped' && inputs.feishu_check_only != true }}
+        if: ${{ always() && steps.run_task.outcome != 'skipped' && inputs.feishu_check_only != true && inputs.backfill_daily_dates != true }}
         uses: actions/cache/save@v4
         with:
           path: .state
           key: news-state-${{ steps.target.outputs.date }}-${{ steps.target.outputs.mode }}-${{ github.run_id }}
 
       - name: 生成当日完成标记
-        if: ${{ steps.run_task.outcome == 'success' && inputs.dry_run != true && inputs.collect_only != true && inputs.backfill_existing != true && inputs.feishu_check_only != true }}
+        if: ${{ steps.validate.outcome == 'success' }}
         shell: bash
         run: |
           mkdir -p .daily-complete
           touch ".daily-complete/${{ steps.target.outputs.date }}"
 
       - name: 保存当日完成标记
-        if: ${{ steps.run_task.outcome == 'success' && inputs.dry_run != true && inputs.collect_only != true && inputs.backfill_existing != true && inputs.feishu_check_only != true && steps.completed.outputs.cache-hit != 'true' }}
+        if: ${{ steps.validate.outcome == 'success' && steps.completed.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@v4
         with:
           path: .daily-complete
           key: personal-growth-complete-${{ steps.target.outputs.date }}
 
       - name: 保存运行报告
-        if: ${{ always() && inputs.feishu_check_only != true }}
+        if: ${{ always() && inputs.feishu_check_only != true && inputs.backfill_daily_dates != true }}
         uses: actions/upload-artifact@v4
         with:
           name: run-report-${{ github.run_id }}
@@ -182,7 +226,7 @@ jobs:
           if-no-files-found: warn
 
       - name: 写入任务摘要
-        if: ${{ always() && inputs.feishu_check_only != true }}
+        if: ${{ always() && inputs.feishu_check_only != true && inputs.backfill_daily_dates != true }}
         shell: bash
         run: |
           if [[ -f run-report.json ]]; then

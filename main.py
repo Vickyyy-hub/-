@@ -21,11 +21,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--backfill-existing", action="store_true", help="按指定日期原地回填已有飞书记录，不新增")
     parser.add_argument("--max-articles", type=int, default=0, help="仅处理前N篇；0表示不限制，主要用于验收")
     parser.add_argument("--check-feishu", action="store_true", help="只读验证飞书权限和字段，不写入")
+    parser.add_argument("--backfill-daily-dates", action="store_true", help="仅按发布日期回填飞书日报日期，不调用AI")
     return parser.parse_args()
 
 
 def main() -> int:
     args = parse_args()
+    if args.backfill_daily_dates:
+        client = FeishuBitable(HttpClient())
+        updated, failed, skipped = client.backfill_daily_dates()
+        result = {"updated": updated, "failed": failed, "skipped_missing_date": skipped}
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return 2 if failed else 0
     if args.check_feishu:
         status = FeishuBitable(HttpClient(), read_only=True).read_only_status()
         print(json.dumps(status, ensure_ascii=False, indent=2))
