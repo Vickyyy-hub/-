@@ -65,9 +65,15 @@ class RunReport:
     summary_char_min: int = 0
     summary_char_max: int = 0
     summary_rejected: int = 0
+    cached_only: bool = False
+    truncated_by_user: bool = False
+    cache_candidates: int = 0
+    cache_misses: int = 0
 
     @property
     def partial(self) -> bool:
+        if self.cached_only:
+            return self.write_failed > 0
         return any(
             (not result.coverage_complete)
             or result.body_failed > 0
@@ -97,6 +103,8 @@ class RunReport:
             "dry_run": self.dry_run,
             "collect_only": self.collect_only,
             "backfill": self.backfill,
+            "cached_only": self.cached_only,
+            "truncated_by_user": self.truncated_by_user,
             "sources": source_data,
             "ai_evaluated": self.ai_evaluated,
             "selected": self.selected,
@@ -117,4 +125,6 @@ class RunReport:
             "summary_char_min": self.summary_char_min,
             "summary_char_max": self.summary_char_max,
             "summary_rejected": self.summary_rejected,
+            "cache_candidates": self.cache_candidates,
+            "cache_misses": self.cache_misses,
         }

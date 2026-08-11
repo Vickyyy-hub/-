@@ -10,8 +10,16 @@ from pathlib import Path
 from typing import Iterable
 
 from .adapters import ADAPTERS, ExcludedArticle, SourceAdapter
-from .ai import ArkAPIError, ArkAnalyzer, ArkRateLimitError
-from .evidence import content_hash, evidence_packets
+from .ai import (
+    FILTER_STAGE,
+    FILTER_VERSION,
+    SUMMARY_STAGE,
+    SUMMARY_VERSION,
+    ArkAPIError,
+    ArkAnalyzer,
+    ArkRateLimitError,
+)
+from .evidence import content_hash, effective_chars, evidence_packets
 from .feishu import FeishuBitable
 from .http import HttpClient
 from .models import Article, RunReport, SourceResult
@@ -289,6 +297,75 @@ class Pipeline:
                 matched.append(article)
             result.articles = matched
         return len(matched_ids), len(supported_records - matched_ids)
+
+    def write_cached(
+        self,
+        day: date,
+        *,
+        report_path: Path = Path("run-report.json"),
+    ) -> RunReport:
+        report = RunReport(
+            day.isoformat(),
+            cached_only=True,
+            truncated_by_user=True,
+        )
+        feishu = FeishuBitable(self.http)
+        report.sources = self.discover(day)
+        for source_result in report.sources.values():
+            for article in source_result.articles:
+                article.daily_date = day
+        articles = self._pre_dedupe(self.fetch_bodies(report.sources))
+        existing_urls, existing_titles = feishu.existing_keys()
+        unseen_articles = [
+            article for article in articles
+            if normalize_url(article.url) not in existing_urls
+            and normalize_title(article.title) not in existing_titles
+        ]
+        report.existing_duplicates = len(articles) - len(unseen_articles)
+
+        model = os.environ.get("ARK_MODEL", "doubao-seed-2-0-mini-260215")
+        state = StateStore()
+        cached_valuable: list[Article] = []
+        try:
+            for article in unseen_articles:
+                key = content_hash(article)
+                filter_result = state.get_stage(key, FILTER_STAGE, f"{model}:{FILTER_VERSION}")
+                if filter_result is None:
+                    report.cache_misses += 1
+                    continue
+                report.ai_evaluated += 1
+                if not filter_result.get("valuable"):
+                    continue
+                summary_result = state.get_stage(key, SUMMARY_STAGE, f"{model}:{SUMMARY_VERSION}")
+                if summary_result is None:
+                    report.cache_misses += 1
+                    continue
+                content = str(summary_result.get("core_content", ""))
+                size = effective_chars(content)
+                paragraphs = [item.strip() for item in content.splitlines() if item.strip()]
+                if summary_result.get("status") != "入选" or not 300 <= size <= 500 or len(paragraphs) != 3:
+                    continue
+                article.ai_result = {**filter_result, **summary_result, "summary_chars": size, "valuable": True}
+                cached_valuable.append(article)
+        finally:
+            state.close()
+
+        selected, report.event_duplicates = self._assign_statuses(cached_valuable)
+        self._record_source_stats(report, cached_valuable)
+        report.cache_candidates = len(cached_valuable)
+        report.selected = len(selected)
+        report.cache_hits = report.ai_evaluated + len(cached_valuable)
+        report.pending_articles = report.cache_misses
+        lengths = [int((article.ai_result or {}).get("summary_chars", 0)) for article in selected]
+        if lengths:
+            report.summary_char_min = min(lengths)
+            report.summary_char_max = max(lengths)
+        written, failed = feishu.write(selected)
+        missing = feishu.verify_urls(selected)
+        report.written = max(0, len(selected) - len(missing))
+        report.write_failed = max(failed, len(missing))
+        report_path.write_text(json.dumps(report.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8")
+        return report
 
     def run(
         self,

@@ -54,6 +54,16 @@ on:
         required: false
         default: false
         type: boolean
+      write_cached_only:
+        description: "只写入指定旧运行的AI缓存，不继续调用模型"
+        required: false
+        default: false
+        type: boolean
+      cached_state_run_id:
+        description: "仅写缓存时使用的原运行ID"
+        required: false
+        default: ""
+        type: string
 
 permissions:
   contents: read
@@ -90,7 +100,9 @@ jobs:
             target_date="$(TZ=Asia/Shanghai date -d yesterday +%F)"
           fi
           echo "date=$target_date" >> "$GITHUB_OUTPUT"
-          if [[ "${{ inputs.backfill_daily_dates }}" == "true" ]]; then
+          if [[ "${{ inputs.write_cached_only }}" == "true" ]]; then
+            mode="cached-write"
+          elif [[ "${{ inputs.backfill_daily_dates }}" == "true" ]]; then
             mode="date-backfill"
           elif [[ "${{ inputs.backfill_existing }}" == "true" ]]; then
             mode="backfill"
@@ -109,24 +121,32 @@ jobs:
           path: .daily-complete
           key: personal-growth-complete-${{ steps.target.outputs.date }}
 
+      - name: 检查用户关闭标记
+        id: closed
+        if: ${{ inputs.backfill_existing != true && inputs.backfill_daily_dates != true && inputs.write_cached_only != true }}
+        uses: actions/cache/restore@v4
+        with:
+          path: .daily-closed
+          key: personal-growth-closed-${{ steps.target.outputs.date }}
+
       - name: 拉取代码
-        if: ${{ inputs.force == true || inputs.backfill_existing == true || inputs.backfill_daily_dates == true || steps.completed.outputs.cache-hit != 'true' }}
+        if: ${{ inputs.write_cached_only == true || inputs.force == true || inputs.backfill_existing == true || inputs.backfill_daily_dates == true || (steps.completed.outputs.cache-hit != 'true' && steps.closed.outputs.cache-hit != 'true') }}
         uses: actions/checkout@v4
 
       - name: 安装 Python
-        if: ${{ inputs.force == true || inputs.backfill_existing == true || inputs.backfill_daily_dates == true || steps.completed.outputs.cache-hit != 'true' }}
+        if: ${{ inputs.write_cached_only == true || inputs.force == true || inputs.backfill_existing == true || inputs.backfill_daily_dates == true || (steps.completed.outputs.cache-hit != 'true' && steps.closed.outputs.cache-hit != 'true') }}
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
           cache: pip
 
       - name: 安装依赖
-        if: ${{ inputs.force == true || inputs.backfill_existing == true || inputs.backfill_daily_dates == true || steps.completed.outputs.cache-hit != 'true' }}
+        if: ${{ inputs.write_cached_only == true || inputs.force == true || inputs.backfill_existing == true || inputs.backfill_daily_dates == true || (steps.completed.outputs.cache-hit != 'true' && steps.closed.outputs.cache-hit != 'true') }}
         run: python -m pip install -r requirements.txt
 
       - name: 恢复分析断点
         id: analysis_state
-        if: ${{ inputs.backfill_daily_dates != true && inputs.feishu_check_only != true && (inputs.force == true || inputs.backfill_existing == true || steps.completed.outputs.cache-hit != 'true') }}
+        if: ${{ inputs.write_cached_only != true && inputs.backfill_daily_dates != true && inputs.feishu_check_only != true && (inputs.force == true || inputs.backfill_existing == true || (steps.completed.outputs.cache-hit != 'true' && steps.closed.outputs.cache-hit != 'true')) }}
         uses: actions/cache/restore@v4
         with:
           path: .state
@@ -134,13 +154,22 @@ jobs:
           restore-keys: |
             news-state-${{ steps.target.outputs.date }}-${{ steps.target.outputs.mode }}-
 
+      - name: 恢复指定旧缓存
+        id: cached_state
+        if: ${{ inputs.write_cached_only == true }}
+        uses: actions/cache/restore@v4
+        with:
+          path: .state
+          key: news-state-${{ steps.target.outputs.date }}-daily-${{ inputs.cached_state_run_id }}
+          fail-on-cache-miss: true
+
       - name: 单元测试
-        if: ${{ inputs.force == true || inputs.backfill_existing == true || inputs.backfill_daily_dates == true || steps.completed.outputs.cache-hit != 'true' }}
+        if: ${{ inputs.write_cached_only == true || inputs.force == true || inputs.backfill_existing == true || inputs.backfill_daily_dates == true || (steps.completed.outputs.cache-hit != 'true' && steps.closed.outputs.cache-hit != 'true') }}
         run: pytest -q
 
       - name: 执行每日任务
         id: run_task
-        if: ${{ inputs.force == true || inputs.backfill_existing == true || inputs.backfill_daily_dates == true || steps.completed.outputs.cache-hit != 'true' }}
+        if: ${{ inputs.write_cached_only == true || inputs.force == true || inputs.backfill_existing == true || inputs.backfill_daily_dates == true || (steps.completed.outputs.cache-hit != 'true' && steps.closed.outputs.cache-hit != 'true') }}
         shell: bash
         run: |
           args=(--sources "${{ inputs.sources || 'all' }}")
@@ -163,11 +192,14 @@ jobs:
           if [[ "${{ inputs.backfill_daily_dates }}" == "true" ]]; then
             args=(--backfill-daily-dates)
           fi
+          if [[ "${{ inputs.write_cached_only }}" == "true" ]]; then
+            args=(--sources "${{ inputs.sources || 'all' }}" --date "${{ steps.target.outputs.date }}" --write-cached-only)
+          fi
           python main.py "${args[@]}"
 
       - name: 验证完整日报
         id: validate
-        if: ${{ steps.run_task.outcome == 'success' && inputs.dry_run != true && inputs.collect_only != true && inputs.backfill_existing != true && inputs.backfill_daily_dates != true && inputs.feishu_check_only != true && (inputs.sources == '' || inputs.sources == 'all') && (inputs.max_articles == '' || inputs.max_articles == '0') }}
+        if: ${{ steps.run_task.outcome == 'success' && inputs.write_cached_only != true && inputs.dry_run != true && inputs.collect_only != true && inputs.backfill_existing != true && inputs.backfill_daily_dates != true && inputs.feishu_check_only != true && (inputs.sources == '' || inputs.sources == 'all') && (inputs.max_articles == '' || inputs.max_articles == '0') }}
         shell: bash
         run: |
           python - <<'PY'
@@ -197,7 +229,7 @@ jobs:
           PY
 
       - name: 保存分析断点
-        if: ${{ always() && steps.run_task.outcome != 'skipped' && inputs.feishu_check_only != true && inputs.backfill_daily_dates != true }}
+        if: ${{ always() && inputs.write_cached_only != true && steps.run_task.outcome != 'skipped' && inputs.feishu_check_only != true && inputs.backfill_daily_dates != true }}
         uses: actions/cache/save@v4
         with:
           path: .state
@@ -216,6 +248,20 @@ jobs:
         with:
           path: .daily-complete
           key: personal-growth-complete-${{ steps.target.outputs.date }}
+
+      - name: 生成用户关闭标记
+        if: ${{ steps.run_task.outcome == 'success' && inputs.write_cached_only == true }}
+        shell: bash
+        run: |
+          mkdir -p .daily-closed
+          touch ".daily-closed/${{ steps.target.outputs.date }}"
+
+      - name: 保存用户关闭标记
+        if: ${{ steps.run_task.outcome == 'success' && inputs.write_cached_only == true }}
+        uses: actions/cache/save@v4
+        with:
+          path: .daily-closed
+          key: personal-growth-closed-${{ steps.target.outputs.date }}
 
       - name: 保存运行报告
         if: ${{ always() && inputs.feishu_check_only != true && inputs.backfill_daily_dates != true }}

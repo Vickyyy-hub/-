@@ -151,6 +151,16 @@ def test_report_exposes_summary_rejections():
     assert report.to_dict()["summary_rejected"] == 2
 
 
+def test_cached_only_report_ignores_expected_source_gaps():
+    from personal_growth.models import RunReport, SourceResult
+
+    report = RunReport("2026-08-10", cached_only=True, truncated_by_user=True)
+    report.sources = {"sspai": SourceResult("少数派", body_failed=1, errors=["正文为空"])}
+    assert report.partial is False
+    report.write_failed = 1
+    assert report.partial is True
+
+
 def test_ark_429_exposes_original_error(monkeypatch):
     monkeypatch.setenv("ARK_API_KEY", "test")
     monkeypatch.setenv("ARK_MIN_INTERVAL_SECONDS", "0")

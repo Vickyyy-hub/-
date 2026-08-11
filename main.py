@@ -22,6 +22,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-articles", type=int, default=0, help="仅处理前N篇；0表示不限制，主要用于验收")
     parser.add_argument("--check-feishu", action="store_true", help="只读验证飞书权限和字段，不写入")
     parser.add_argument("--backfill-daily-dates", action="store_true", help="仅按发布日期回填飞书日报日期，不调用AI")
+    parser.add_argument("--write-cached-only", action="store_true", help="只写入已有AI缓存，不继续调用模型")
     return parser.parse_args()
 
 
@@ -33,6 +34,12 @@ def main() -> int:
         result = {"updated": updated, "failed": failed, "skipped_missing_date": skipped}
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return 2 if failed else 0
+    if args.write_cached_only:
+        target = date.fromisoformat(args.date) if args.date else datetime.now(SHANGHAI).date() - timedelta(days=1)
+        sources = list(ADAPTERS) if args.sources == "all" else [item.strip() for item in args.sources.split(",") if item.strip()]
+        report = Pipeline(sources).write_cached(target)
+        print(json.dumps(report.to_dict(), ensure_ascii=False, indent=2))
+        return 2 if report.write_failed else 0
     if args.check_feishu:
         status = FeishuBitable(HttpClient(), read_only=True).read_only_status()
         print(json.dumps(status, ensure_ascii=False, indent=2))
