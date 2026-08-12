@@ -1,0 +1,32 @@
+name: 公众号每日资讯模板校验入口
+
+on:
+  schedule:
+    - cron: "30 0,1 * * *"
+
+env:
+  ARK_API_KEY: ${{ secrets.ARK_API_KEY }}
+  FEISHU_APP_ID: ${{ secrets.FEISHU_APP_ID }}
+  FEISHU_APP_SECRET: ${{ secrets.FEISHU_APP_SECRET }}
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/cache/restore@v4
+        with:
+          path: .state
+          key: wechat-growth-template-state
+      - run: |
+          # Active deployment lives at the repository root workflow.
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          config = json.loads(Path("pipeline.config.json").read_text())
+          expected_sources = {key for key, value in config["sources"].items() if value.get("enabled")}
+          print(sorted(expected_sources))
+          PY
+      - uses: actions/cache/save@v4
+        with:
+          path: .state
+          key: wechat-growth-template-state

@@ -1,0 +1,18 @@
+{
+  "project": {"name": "公众号每日资讯", "timezone": "Asia/Shanghai", "retry_days": 7},
+  "sources": {
+    "simple_psychology": {"enabled": true, "mode": "daily", "name": "简单心理", "mp_id": "MP_WXS_2393043732", "priority_weight": 1, "feed_limit": 500, "min_body_chars": 400, "exclude_keywords": []},
+    "dxy": {"enabled": true, "mode": "daily", "name": "丁香医生", "mp_id": "MP_WXS_2058310401", "priority_weight": 1, "feed_limit": 500, "min_body_chars": 400, "exclude_keywords": []},
+    "earth_knowledge": {"enabled": true, "mode": "daily", "name": "地球知识局", "mp_id": "MP_WXS_3927208278", "priority_weight": 1, "feed_limit": 500, "min_body_chars": 400, "exclude_keywords": []},
+    "gelong": {"enabled": true, "mode": "daily", "name": "格隆", "mp_id": "MP_WXS_3258282951", "priority_weight": 1, "feed_limit": 500, "min_body_chars": 400, "exclude_keywords": []},
+    "leviathan": {"enabled": true, "mode": "daily", "name": "利维坦", "mp_id": "MP_WXS_3093191505", "priority_weight": 1, "feed_limit": 500, "min_body_chars": 400, "exclude_keywords": []}
+  },
+  "model": {"provider": "volcengine_responses", "base_url": "https://ark.cn-beijing.volces.com/api/v3/responses", "model": "doubao-seed-2-0-mini-260215", "api_key_env": "ARK_API_KEY"},
+  "summary": {"minimum_chars": 300, "maximum_chars": 500, "target_minimum_chars": 340, "target_maximum_chars": 420},
+  "outputs": {
+    "feishu": {"enabled": true},
+    "json": {"enabled": true, "path": "output/selected-{date}.json"},
+    "csv": {"enabled": true, "path": "output/selected-{date}.csv"}
+  },
+  "schedule": {"github_cron": ["30 0,1 * * *"], "external_times": []}
+}

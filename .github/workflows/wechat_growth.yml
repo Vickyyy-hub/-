@@ -1,0 +1,215 @@
+name: 公众号每日资讯
+
+on:
+  schedule:
+    - cron: "30 0,1 * * *"
+  workflow_dispatch:
+    inputs:
+      target_date:
+        description: "处理日期（北京时间 YYYY-MM-DD；留空为前一日）"
+        required: false
+        type: string
+      sources:
+        description: "all或逗号分隔的公众号来源键"
+        required: false
+        default: "all"
+        type: string
+      dry_run:
+        description: "运行AI但不写飞书"
+        required: false
+        default: false
+        type: boolean
+      collect_only:
+        description: "只验证采集和正文"
+        required: false
+        default: false
+        type: boolean
+      feishu_check_only:
+        description: "只读检查飞书权限和字段"
+        required: false
+        default: false
+        type: boolean
+      bootstrap_feishu:
+        description: "幂等创建公众号每日资讯数据表"
+        required: false
+        default: false
+        type: boolean
+      force:
+        description: "忽略完成标记并强制重跑"
+        required: false
+        default: false
+        type: boolean
+      max_articles:
+        description: "最多处理文章数；0表示不限制"
+        required: false
+        default: "0"
+        type: string
+      ark_max_429_retries:
+        description: "豆包429最大重试次数"
+        required: false
+        default: "4"
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: wechat-growth-daily
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+    defaults:
+      run:
+        working-directory: wechat-growth-news
+    env:
+      ARK_API_KEY: ${{ secrets.ARK_API_KEY }}
+      FEISHU_APP_ID: ${{ secrets.FEISHU_APP_ID }}
+      FEISHU_APP_SECRET: ${{ secrets.FEISHU_APP_SECRET }}
+      FEISHU_APP_TOKEN: ${{ secrets.FEISHU_APP_TOKEN }}
+      WEWE_RSS_BASE_URL: ${{ secrets.WEWE_RSS_BASE_URL }}
+      FEISHU_WECHAT_TABLE_ID: ${{ vars.FEISHU_WECHAT_TABLE_ID }}
+      AI_MODEL: doubao-seed-2-0-mini-260215
+      ARK_MIN_INTERVAL_SECONDS: "4"
+      ARK_MAX_429_RETRIES: ${{ inputs.ark_max_429_retries || '4' }}
+      ARK_429_CIRCUIT_LIMIT: "3"
+      ARK_BACKOFF_SECONDS: "60,120,300,600"
+      FETCH_WORKERS: "5"
+      STATE_DB: .state/wechat_pipeline.sqlite
+      MAX_RUNTIME_MINUTES: "280"
+      PYTHONUNBUFFERED: "1"
+
+    steps:
+      - name: 确定目标日期
+        id: target
+        shell: bash
+        working-directory: .
+        run: |
+          if [[ -n "${{ inputs.target_date }}" ]]; then
+            target_date="${{ inputs.target_date }}"
+          else
+            target_date="$(TZ=Asia/Shanghai date -d yesterday +%F)"
+          fi
+          echo "date=$target_date" >> "$GITHUB_OUTPUT"
+          mode="daily"
+          [[ "${{ inputs.dry_run }}" == "true" ]] && mode="dry"
+          [[ "${{ inputs.collect_only }}" == "true" ]] && mode="collect"
+          echo "mode=$mode" >> "$GITHUB_OUTPUT"
+
+      - name: 检查当日完成标记
+        id: completed
+        if: ${{ inputs.bootstrap_feishu != true && inputs.feishu_check_only != true }}
+        uses: actions/cache/restore@v4
+        with:
+          path: wechat-growth-news/.daily-complete
+          key: wechat-growth-complete-${{ steps.target.outputs.date }}
+
+      - name: 拉取代码
+        if: ${{ inputs.bootstrap_feishu == true || inputs.feishu_check_only == true || inputs.force == true || steps.completed.outputs.cache-hit != 'true' }}
+        uses: actions/checkout@v4
+
+      - name: 安装 Python
+        if: ${{ inputs.bootstrap_feishu == true || inputs.feishu_check_only == true || inputs.force == true || steps.completed.outputs.cache-hit != 'true' }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: wechat-growth-news/requirements.txt
+
+      - name: 安装依赖
+        if: ${{ inputs.bootstrap_feishu == true || inputs.feishu_check_only == true || inputs.force == true || steps.completed.outputs.cache-hit != 'true' }}
+        run: python -m pip install -r requirements.txt
+
+      - name: 恢复分析断点
+        if: ${{ inputs.bootstrap_feishu != true && inputs.feishu_check_only != true && (inputs.force == true || steps.completed.outputs.cache-hit != 'true') }}
+        uses: actions/cache/restore@v4
+        with:
+          path: wechat-growth-news/.state
+          key: wechat-growth-state-${{ steps.target.outputs.date }}-${{ steps.target.outputs.mode }}-${{ github.run_id }}
+          restore-keys: |
+            wechat-growth-state-${{ steps.target.outputs.date }}-${{ steps.target.outputs.mode }}-
+
+      - name: 单元测试
+        if: ${{ inputs.bootstrap_feishu == true || inputs.feishu_check_only == true || inputs.force == true || steps.completed.outputs.cache-hit != 'true' }}
+        run: pytest -q
+
+      - name: 执行任务
+        id: run_task
+        if: ${{ inputs.bootstrap_feishu == true || inputs.feishu_check_only == true || inputs.force == true || steps.completed.outputs.cache-hit != 'true' }}
+        shell: bash
+        run: |
+          if [[ "${{ inputs.bootstrap_feishu }}" == "true" ]]; then
+            python main.py --bootstrap-feishu
+            exit 0
+          fi
+          if [[ "${{ inputs.feishu_check_only }}" == "true" ]]; then
+            python main.py --check-feishu
+            exit 0
+          fi
+          args=(--date "${{ steps.target.outputs.date }}" --sources "${{ inputs.sources || 'all' }}" --trigger-source "${{ github.event_name }}")
+          [[ "${{ inputs.dry_run }}" == "true" ]] && args+=(--dry-run)
+          [[ "${{ inputs.collect_only }}" == "true" ]] && args+=(--collect-only)
+          [[ "${{ inputs.max_articles || '0' }}" != "0" ]] && args+=(--max-articles "${{ inputs.max_articles }}")
+          python main.py "${args[@]}"
+
+      - name: 验证完整日报
+        id: validate
+        if: ${{ steps.run_task.outcome == 'success' && inputs.bootstrap_feishu != true && inputs.feishu_check_only != true && inputs.dry_run != true && inputs.collect_only != true && (inputs.sources == '' || inputs.sources == 'all') && (inputs.max_articles == '' || inputs.max_articles == '0') }}
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          report = json.loads(Path("run-report.json").read_text(encoding="utf-8"))
+          config = json.loads(Path("pipeline.config.json").read_text(encoding="utf-8"))
+          expected_sources = {key for key, value in config["sources"].items() if value.get("enabled") and value.get("mode") == "daily"}
+          errors = []
+          if report.get("partial"):
+              errors.append("partial=true")
+          if set(report.get("sources") or {}) != expected_sources:
+              errors.append("来源集合不完整")
+          if int(report.get("write_failed", 0)):
+              errors.append(f"write_failed={report['write_failed']}")
+          if int(report.get("selected", 0)) and not (300 <= int(report.get("summary_char_min", 0)) <= int(report.get("summary_char_max", 0)) <= 500):
+              errors.append("摘要字数不合格")
+          if errors:
+              raise SystemExit("完整日报验收失败：" + "; ".join(errors))
+          print("完整日报验收通过")
+          PY
+
+      - name: 保存分析断点
+        if: ${{ always() && inputs.bootstrap_feishu != true && inputs.feishu_check_only != true && steps.run_task.outcome != 'skipped' }}
+        uses: actions/cache/save@v4
+        with:
+          path: wechat-growth-news/.state
+          key: wechat-growth-state-${{ steps.target.outputs.date }}-${{ steps.target.outputs.mode }}-${{ github.run_id }}
+
+      - name: 生成当日完成标记
+        if: ${{ steps.validate.outcome == 'success' }}
+        run: mkdir -p .daily-complete && touch ".daily-complete/${{ steps.target.outputs.date }}"
+
+      - name: 保存当日完成标记
+        if: ${{ steps.validate.outcome == 'success' && steps.completed.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v4
+        with:
+          path: wechat-growth-news/.daily-complete
+          key: wechat-growth-complete-${{ steps.target.outputs.date }}
+
+      - name: 保存运行报告
+        if: ${{ always() && inputs.bootstrap_feishu != true && inputs.feishu_check_only != true }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: wechat-run-report-${{ github.run_id }}
+          path: wechat-growth-news/run-report.json
+          if-no-files-found: warn
+
+      - name: 写入任务摘要
+        if: ${{ always() && inputs.bootstrap_feishu != true && inputs.feishu_check_only != true }}
+        run: |
+          if [[ -f run-report.json ]]; then
+            echo '## 公众号每日资讯运行报告' >> "$GITHUB_STEP_SUMMARY"
+            echo '```json' >> "$GITHUB_STEP_SUMMARY"
+            cat run-report.json >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+          fi
