@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import os
+import re
 import time as clock
+from collections import Counter
 from datetime import date, datetime, time
 from typing import Any, Iterable
 
@@ -203,11 +205,44 @@ class FeishuBitable:
 
     def read_only_status(self) -> dict[str, Any]:
         records = self.list_records()
+        statuses: Counter[str] = Counter()
+        url_counts: Counter[str] = Counter()
+        title_counts: Counter[str] = Counter()
+        completed_lengths: list[int] = []
+        completed_missing_summary = 0
+        failed_with_summary = 0
+        for record in records:
+            fields = record.get("fields") or {}
+            status = self._extract_text(fields.get("记录状态")) or "未设置"
+            title = normalize_title(self._extract_text(fields.get("标题")))
+            url = normalize_url(self._extract_text(fields.get("来源网站")))
+            summary = self._extract_text(fields.get("核心干货")).strip()
+            statuses[status] += 1
+            if title:
+                title_counts[title] += 1
+            if url:
+                url_counts[url] += 1
+            if status == "已完成":
+                if summary:
+                    completed_lengths.append(len(re.sub(r"\s+", "", summary)))
+                else:
+                    completed_missing_summary += 1
+            elif summary:
+                failed_with_summary += 1
         return {
             "readable": True,
             "table_id": self.table_id,
             "record_count": len(records),
             "required_fields": sorted(self.required_fields),
+            "status_counts": dict(sorted(statuses.items())),
+            "completed_summary_chars": {
+                "minimum": min(completed_lengths) if completed_lengths else None,
+                "maximum": max(completed_lengths) if completed_lengths else None,
+            },
+            "completed_missing_summary": completed_missing_summary,
+            "failed_with_summary": failed_with_summary,
+            "duplicate_urls": sum(count - 1 for count in url_counts.values() if count > 1),
+            "duplicate_titles": sum(count - 1 for count in title_counts.values() if count > 1),
         }
 
     @staticmethod

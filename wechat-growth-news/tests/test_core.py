@@ -179,6 +179,23 @@ def test_feishu_pending_records_respect_source_and_cutoff(monkeypatch):
     assert [item.record_id for item in pending] == ["r1"]
 
 
+def test_feishu_read_only_status_audits_quality(monkeypatch):
+    client = object.__new__(FeishuBitable)
+    client.table_id = "table"
+    client.required_fields = FeishuBitable.required_fields
+    monkeypatch.setattr(client, "list_records", lambda: [
+        {"fields": {"标题": "完成文章", "来源网站": {"link": "https://mp.weixin.qq.com/s/a"}, "记录状态": "已完成", "核心干货": "第一段。\n第二段。\n第三段。"}},
+        {"fields": {"标题": "完成 文章", "来源网站": {"link": "https://mp.weixin.qq.com/s/a?x=1"}, "记录状态": "AI待重试", "核心干货": ""}},
+    ])
+    status = client.read_only_status()
+    assert status["status_counts"] == {"AI待重试": 1, "已完成": 1}
+    assert status["completed_summary_chars"] == {"minimum": 12, "maximum": 12}
+    assert status["duplicate_urls"] == 1
+    assert status["duplicate_titles"] == 1
+    assert status["completed_missing_summary"] == 0
+    assert status["failed_with_summary"] == 0
+
+
 def test_feishu_writes_in_small_batches(monkeypatch):
     client = object.__new__(FeishuBitable)
     client.app_token = "app"
