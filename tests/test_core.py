@@ -58,6 +58,97 @@ def test_json_parser_and_chunker():
     assert all(len(chunk) <= 120 for chunk in chunks)
 
 
+def test_filter_invalid_json_is_corrected_once(monkeypatch, tmp_path):
+    monkeypatch.setenv("ARK_API_KEY", "test-key")
+    monkeypatch.setenv("STATE_DB", str(tmp_path / "state.sqlite"))
+    analyzer = ArkAnalyzer()
+    responses = iter([
+        '{"status":"入选"',
+        '{"status":"淘汰","reason":"普通快讯","event_key":"测试事件",'
+        '"topics":["商业"],"category":"商业与公司","unique_points":[],'
+        '"scores":{"importance":1,"information_gain":1,"social_impact":1,'
+        '"actionability":1,"evidence_density":1}}',
+    ])
+    monkeypatch.setattr(analyzer, "_request", lambda *args, **kwargs: next(responses))
+    article = Article("虎嗅", "测试文章", "https://example.com/invalid-once", from_epoch(1786195964))
+    state = StateStore()
+    try:
+        result = analyzer.analyze(article, "初筛证据", "摘要证据", "invalid-once", state)
+    finally:
+        state.close()
+    assert result["valuable"] is False
+    assert result.get("invalid_ai") is not True
+
+
+def test_filter_twice_invalid_is_cached_as_single_article_skip(monkeypatch, tmp_path):
+    monkeypatch.setenv("ARK_API_KEY", "test-key")
+    monkeypatch.setenv("STATE_DB", str(tmp_path / "state.sqlite"))
+    analyzer = ArkAnalyzer()
+    calls = []
+
+    def invalid_request(*args, **kwargs):
+        calls.append(1)
+        return '{"status":"入选"'
+
+    monkeypatch.setattr(analyzer, "_request", invalid_request)
+    article = Article("虎嗅", "测试文章", "https://example.com/invalid-twice", from_epoch(1786195964))
+    state = StateStore()
+    try:
+        first = analyzer.analyze(article, "初筛证据", "摘要证据", "invalid-twice", state)
+        second = analyzer.analyze(article, "初筛证据", "摘要证据", "invalid-twice", state)
+    finally:
+        state.close()
+    assert first["invalid_ai"] is True
+    assert first["reason"] == "AI格式错误跳过"
+    assert second["invalid_ai"] is True
+    assert len(calls) == 2
+
+
+def test_invalid_ai_article_does_not_interrupt_following_articles(monkeypatch, tmp_path):
+    monkeypatch.setenv("STATE_DB", str(tmp_path / "state.sqlite"))
+    articles = [
+        Article("虎嗅", "坏格式", "https://example.com/bad", from_epoch(1786195965), body="正文" * 500),
+        Article("虎嗅", "正常文章", "https://example.com/good", from_epoch(1786195964), body="正文" * 500),
+    ]
+
+    class FakeAnalyzer:
+        model = "test-model"
+
+        def __init__(self):
+            self.filter_calls = 0
+            self.summary_calls = 0
+            self.cache_hits = 0
+            self.rate_limit_count = 0
+            self.retry_wait_seconds = 0.0
+
+        def analyze(self, article, filter_evidence, summary_evidence, cache_key, state):
+            if article.title == "坏格式":
+                return {
+                    "status": "淘汰", "valuable": False, "reason": "AI格式错误跳过",
+                    "invalid_ai": True, "invalid_ai_error": "JSON缺少逗号",
+                }
+            return {
+                "status": "入选", "valuable": True, "reason": "有价值",
+                "event_key": article.title, "topics": ["商业"], "category": "商业与公司",
+                "unique_points": ["新增事实"], "score_total": 16,
+                "scores": {"importance": 3, "information_gain": 4, "social_impact": 3,
+                           "actionability": 3, "evidence_density": 3},
+                "core_content": "甲" * 105 + "\n\n" + "乙" * 105 + "\n\n" + "丙" * 105,
+                "summary_chars": 315,
+            }
+
+    monkeypatch.setattr("personal_growth.pipeline.ArkAnalyzer", FakeAnalyzer)
+    pipeline = object.__new__(Pipeline)
+    pipeline.deadline = time.monotonic() + 60
+    report = RunReport("2026-08-11", sources={"huxiu": SourceResult("虎嗅")})
+    analyzed, complete = pipeline.analyze(articles, report, job_id="invalid-continues")
+    assert complete is True
+    assert [article.title for article in analyzed] == ["正常文章"]
+    assert report.invalid_ai_skipped == 1
+    assert report.sources["huxiu"].invalid_ai_skipped == 1
+    assert report.sources["huxiu"].invalid_ai_items[0]["url"] == "https://example.com/bad"
+
+
 def _ai(score: int, unique: str) -> dict:
     return {
         "event_key": "公司发布新模型",

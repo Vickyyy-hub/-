@@ -36,6 +36,8 @@ class SourceResult:
     selected_main: int = 0
     selected_incremental: int = 0
     event_duplicates: int = 0
+    invalid_ai_skipped: int = 0
+    invalid_ai_items: list[dict[str, str]] = field(default_factory=list)
     coverage_complete: bool = False
     articles: list[Article] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
@@ -73,6 +75,7 @@ class RunReport:
     truncated_by_user: bool = False
     cache_candidates: int = 0
     cache_misses: int = 0
+    invalid_ai_skipped: int = 0
 
     @property
     def partial(self) -> bool:
@@ -100,6 +103,8 @@ class RunReport:
                 "selected_main": result.selected_main,
                 "selected_incremental": result.selected_incremental,
                 "event_duplicates": result.event_duplicates,
+                "invalid_ai_skipped": result.invalid_ai_skipped,
+                "invalid_ai_items": result.invalid_ai_items,
                 "coverage_complete": result.coverage_complete,
                 "errors": result.errors,
                 "warnings": result.warnings,
@@ -135,4 +140,5 @@ class RunReport:
             "summary_rejected": self.summary_rejected,
             "cache_candidates": self.cache_candidates,
             "cache_misses": self.cache_misses,
+            "invalid_ai_skipped": self.invalid_ai_skipped,
         }

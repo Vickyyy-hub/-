@@ -299,6 +299,19 @@ class Pipeline:
                 source_result.ai_pending -= 1
                 source_result.cache_hits += analyzer.cache_hits - cache_before
                 article.ai_result = result
+                if result.get("invalid_ai"):
+                    source_result.invalid_ai_skipped += 1
+                    report.invalid_ai_skipped += 1
+                    source_result.invalid_ai_items.append(
+                        {
+                            "title": article.title,
+                            "url": article.url,
+                            "error": str(result.get("invalid_ai_error", "未知格式错误")),
+                        }
+                    )
+                    source_result.warnings.append(
+                        f"AI格式错误跳过 {article.url}: {result.get('invalid_ai_error', '未知格式错误')}"
+                    )
                 if str(result.get("reason", "")).startswith("摘要"):
                     source_result.warnings.append(
                         f"摘要淘汰 {article.url}: {result.get('reason')}"

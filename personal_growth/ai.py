@@ -22,6 +22,7 @@ FILTER_VERSION = "filter_v2"
 SUMMARY_VERSION = "summary_v4"
 FILTER_STAGE = "filter"
 SUMMARY_STAGE = "summary"
+FILTER_CORRECTION_MAX_TOKENS = 260
 
 
 class ArkRateLimitError(RuntimeError):
@@ -294,7 +295,31 @@ class ArkAnalyzer:
         filter_result = state.get_stage(cache_key, FILTER_STAGE, f"{self.model}:{FILTER_VERSION}")
         if filter_result is None:
             system, user = self._filter_prompts(article, filter_evidence)
-            filter_result = self._validate_filter(self._request(system, user, 260, FILTER_STAGE))
+            raw_filter = self._request(system, user, 260, FILTER_STAGE)
+            try:
+                filter_result = self._validate_filter(raw_filter)
+            except (ValueError, TypeError, KeyError) as first_error:
+                correction = (
+                    f"上一版初筛结果无法解析：{first_error}。\n"
+                    f"上一版：\n{raw_filter}\n\n"
+                    "请保持原判断，只修正为提示词要求的一行合法JSON；不要Markdown或解释。"
+                )
+                corrected = self._request(
+                    system,
+                    correction,
+                    FILTER_CORRECTION_MAX_TOKENS,
+                    FILTER_STAGE,
+                )
+                try:
+                    filter_result = self._validate_filter(corrected)
+                except (ValueError, TypeError, KeyError) as second_error:
+                    filter_result = {
+                        "status": "淘汰",
+                        "valuable": False,
+                        "reason": "AI格式错误跳过",
+                        "invalid_ai": True,
+                        "invalid_ai_error": clean_text(str(second_error))[:200],
+                    }
             state.put_stage(cache_key, FILTER_STAGE, f"{self.model}:{FILTER_VERSION}", filter_result)
         else:
             self.cache_hits += 1
