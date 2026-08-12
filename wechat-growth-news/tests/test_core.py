@@ -118,6 +118,8 @@ def test_summary_requires_three_paragraphs_and_evidence_numbers():
     assert ArkAnalyzer.validate_summary(summary, "没有数字") == summary
     with pytest.raises(ValueError, match="证据外数字"):
         ArkAnalyzer.validate_summary("甲" * 100 + "10日" + "\n\n" + "乙" * 105 + "\n\n" + "丙" * 105, "没有数字")
+    supported = "甲" * 95 + "49.9元" + "\n\n" + "乙" * 105 + "\n\n" + "丙" * 105
+    assert ArkAnalyzer.validate_summary(supported, "原文价格为49.9元") == supported
 
 
 def test_evidence_and_cache_identity_include_body():

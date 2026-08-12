@@ -17,7 +17,7 @@ from .text import clean_text, parse_json_object
 
 CATEGORIES = ("心理与关系", "健康与生活", "社会与地理", "商业与趋势", "文化与思想")
 FILTER_VERSION = "filter_wechat_v1"
-SUMMARY_VERSION = "summary_wechat_v1"
+SUMMARY_VERSION = "summary_wechat_v2"
 FILTER_STAGE = "filter"
 SUMMARY_STAGE = "summary"
 FILTER_CORRECTION_MAX_TOKENS = 260
@@ -344,7 +344,7 @@ class ArkAnalyzer:
             system, user = self._summary_prompts(article, summary_evidence)
             raw = self._request(system, user, 900, SUMMARY_STAGE)
             validation_evidence = (
-                f"{article.title}\n{article.published_at.isoformat()}\n{summary_evidence}"
+                f"{article.title}\n{article.published_at.isoformat()}\n{article.body}"
             )
             try:
                 summary = self.validate_summary(raw, validation_evidence)
