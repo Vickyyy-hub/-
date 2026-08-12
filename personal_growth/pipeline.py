@@ -438,9 +438,16 @@ class Pipeline:
         collect_only: bool = False,
         backfill: bool = False,
         max_articles: int = 0,
+        trigger_source: str = "manual",
         report_path: Path = Path("run-report.json"),
     ) -> RunReport:
-        report = RunReport(day.isoformat(), dry_run=dry_run, collect_only=collect_only, backfill=backfill)
+        report = RunReport(
+            day.isoformat(),
+            trigger_source=trigger_source,
+            dry_run=dry_run,
+            collect_only=collect_only,
+            backfill=backfill,
+        )
         feishu: FeishuBitable | None = None
         if not collect_only and (backfill or not dry_run):
             feishu = FeishuBitable(self.http)

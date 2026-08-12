@@ -4,6 +4,7 @@ import argparse
 import json
 import sys
 from datetime import date, datetime, timedelta
+from pathlib import Path
 
 from personal_growth.adapters import ADAPTERS
 from personal_growth.feishu import FeishuBitable
@@ -16,6 +17,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="六站个人成长资讯自动化")
     parser.add_argument("--date", help="处理日期 YYYY-MM-DD；默认北京时间前一自然日")
     parser.add_argument("--sources", default="all", help="all 或逗号分隔：huxiu,sspai,jiemian,ithome,tmtpost,36kr")
+    parser.add_argument("--trigger-source", default="manual", help="运行触发来源，仅用于报告审计")
     parser.add_argument("--dry-run", action="store_true", help="执行采集和AI，但不写飞书")
     parser.add_argument("--collect-only", action="store_true", help="只采集并验证正文，不调用AI、不写飞书")
     parser.add_argument("--backfill-existing", action="store_true", help="按指定日期原地回填已有飞书记录，不新增")
@@ -38,6 +40,11 @@ def main() -> int:
         target = date.fromisoformat(args.date) if args.date else datetime.now(SHANGHAI).date() - timedelta(days=1)
         sources = list(ADAPTERS) if args.sources == "all" else [item.strip() for item in args.sources.split(",") if item.strip()]
         report = Pipeline(sources).write_cached(target)
+        report.trigger_source = args.trigger_source
+        Path("run-report.json").write_text(
+            json.dumps(report.to_dict(), ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
         print(json.dumps(report.to_dict(), ensure_ascii=False, indent=2))
         return 2 if report.write_failed else 0
     if args.check_feishu:
@@ -57,6 +64,7 @@ def main() -> int:
         collect_only=args.collect_only,
         backfill=args.backfill_existing,
         max_articles=max(0, args.max_articles),
+        trigger_source=args.trigger_source,
     )
     print(json.dumps(report.to_dict(), ensure_ascii=False, indent=2))
     if report.partial:

@@ -2,9 +2,14 @@ name: 个人成长六站每日资讯
 
 on:
   schedule:
-    - cron: "7,22,37,52 0,1 * * *"
+    - cron: "22 0,1 * * *"
   workflow_dispatch:
     inputs:
+      trigger_source:
+        description: "触发来源：manual、feishu或其他标识"
+        required: false
+        default: "manual"
+        type: string
       target_date:
         description: "处理日期（北京时间 YYYY-MM-DD；留空为前一日）"
         required: false
@@ -174,6 +179,7 @@ jobs:
         run: |
           args=(--sources "${{ inputs.sources || 'all' }}")
           args+=(--date "${{ steps.target.outputs.date }}")
+          args+=(--trigger-source "${{ inputs.trigger_source || github.event_name }}")
           if [[ "${{ inputs.dry_run }}" == "true" ]]; then
             args+=(--dry-run)
           fi
@@ -193,7 +199,7 @@ jobs:
             args=(--backfill-daily-dates)
           fi
           if [[ "${{ inputs.write_cached_only }}" == "true" ]]; then
-            args=(--sources "${{ inputs.sources || 'all' }}" --date "${{ steps.target.outputs.date }}" --write-cached-only)
+            args=(--sources "${{ inputs.sources || 'all' }}" --date "${{ steps.target.outputs.date }}" --trigger-source "${{ inputs.trigger_source || github.event_name }}" --write-cached-only)
           fi
           python main.py "${args[@]}"
 

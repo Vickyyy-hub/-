@@ -229,8 +229,9 @@ def test_state_cache_persists_stages_and_progress(tmp_path):
 
 
 def test_report_exposes_summary_rejections():
-    report = RunReport("2026-08-09", summary_rejected=2)
+    report = RunReport("2026-08-09", trigger_source="feishu", summary_rejected=2)
     assert report.to_dict()["summary_rejected"] == 2
+    assert report.to_dict()["trigger_source"] == "feishu"
 
 
 def test_report_exposes_per_source_ai_progress():

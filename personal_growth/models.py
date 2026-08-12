@@ -45,6 +45,7 @@ class SourceResult:
 @dataclass
 class RunReport:
     target_date: str
+    trigger_source: str = "manual"
     sources: dict[str, SourceResult] = field(default_factory=dict)
     ai_evaluated: int = 0
     selected: int = 0
@@ -105,6 +106,7 @@ class RunReport:
             }
         return {
             "target_date": self.target_date,
+            "trigger_source": self.trigger_source,
             "partial": self.partial,
             "dry_run": self.dry_run,
             "collect_only": self.collect_only,
