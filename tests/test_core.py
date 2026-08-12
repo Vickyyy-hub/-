@@ -346,6 +346,34 @@ def test_cached_only_report_ignores_expected_source_gaps():
     assert report.partial is True
 
 
+def test_complete_cached_recovery_is_not_marked_user_truncated(monkeypatch, tmp_path):
+    monkeypatch.setenv("STATE_DB", str(tmp_path / "state.sqlite"))
+    pipeline = object.__new__(Pipeline)
+    pipeline.http = object()
+    pipeline.adapters = {}
+
+    class FakeFeishu:
+        @staticmethod
+        def existing_keys():
+            return set(), set()
+
+        @staticmethod
+        def write(articles):
+            return 0, 0
+
+        @staticmethod
+        def verify_urls(articles):
+            return set()
+
+    monkeypatch.setattr("personal_growth.pipeline.FeishuBitable", lambda http: FakeFeishu())
+    monkeypatch.setattr(pipeline, "discover", lambda day: {})
+    monkeypatch.setattr(pipeline, "fetch_bodies", lambda sources: [])
+    monkeypatch.setattr(pipeline, "_pre_dedupe", lambda articles: [])
+    report = pipeline.write_cached(date(2026, 8, 11), complete_recovery=True, report_path=tmp_path / "report.json")
+    assert report.cached_only is True
+    assert report.truncated_by_user is False
+
+
 def test_ark_429_exposes_original_error(monkeypatch):
     monkeypatch.setenv("ARK_API_KEY", "test")
     monkeypatch.setenv("ARK_MIN_INTERVAL_SECONDS", "0")

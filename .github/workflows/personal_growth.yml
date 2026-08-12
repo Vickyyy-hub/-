@@ -69,6 +69,11 @@ on:
         required: false
         default: ""
         type: string
+      cached_is_complete:
+        description: "旧缓存来自完整分析；写入成功后生成完整日报标记"
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -200,6 +205,9 @@ jobs:
           fi
           if [[ "${{ inputs.write_cached_only }}" == "true" ]]; then
             args=(--sources "${{ inputs.sources || 'all' }}" --date "${{ steps.target.outputs.date }}" --trigger-source "${{ inputs.trigger_source || github.event_name }}" --write-cached-only)
+            if [[ "${{ inputs.cached_is_complete }}" == "true" ]]; then
+              args+=(--cached-complete)
+            fi
           fi
           python main.py "${args[@]}"
 
@@ -234,6 +242,41 @@ jobs:
           print("完整日报验收通过")
           PY
 
+      - name: 验证完整缓存恢复
+        id: validate_cached
+        if: ${{ steps.run_task.outcome == 'success' && inputs.write_cached_only == true && inputs.cached_is_complete == true }}
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          report = json.loads(Path("run-report.json").read_text(encoding="utf-8"))
+          errors = []
+          if report.get("partial"):
+              errors.append("partial=true")
+          if report.get("truncated_by_user"):
+              errors.append("truncated_by_user=true")
+          if int(report.get("filter_calls", 0)) or int(report.get("summary_calls", 0)):
+              errors.append("AI调用不为0")
+          if int(report.get("write_failed", 0)):
+              errors.append(f"write_failed={report['write_failed']}")
+          sources = report.get("sources") or {}
+          if len(sources) != 6:
+              errors.append(f"sources={len(sources)}")
+          incomplete = [name for name, data in sources.items() if not data.get("coverage_complete")]
+          if incomplete:
+              errors.append("coverage_incomplete=" + ",".join(incomplete))
+          if int(report.get("selected", 0)):
+              minimum = int(report.get("summary_char_min", 0))
+              maximum = int(report.get("summary_char_max", 0))
+              if minimum < 300 or maximum > 500:
+                  errors.append(f"summary_chars={minimum}-{maximum}")
+          if errors:
+              raise SystemExit("完整缓存恢复验收失败：" + "; ".join(errors))
+          print("完整缓存恢复验收通过")
+          PY
+
       - name: 保存分析断点
         if: ${{ always() && inputs.write_cached_only != true && steps.run_task.outcome != 'skipped' && inputs.feishu_check_only != true && inputs.backfill_daily_dates != true }}
         uses: actions/cache/save@v4
@@ -242,28 +285,28 @@ jobs:
           key: news-state-${{ steps.target.outputs.date }}-${{ steps.target.outputs.mode }}-${{ github.run_id }}
 
       - name: 生成当日完成标记
-        if: ${{ steps.validate.outcome == 'success' }}
+        if: ${{ steps.validate.outcome == 'success' || steps.validate_cached.outcome == 'success' }}
         shell: bash
         run: |
           mkdir -p .daily-complete
           touch ".daily-complete/${{ steps.target.outputs.date }}"
 
       - name: 保存当日完成标记
-        if: ${{ steps.validate.outcome == 'success' && steps.completed.outputs.cache-hit != 'true' }}
+        if: ${{ (steps.validate.outcome == 'success' || steps.validate_cached.outcome == 'success') && steps.completed.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@v4
         with:
           path: .daily-complete
           key: personal-growth-complete-${{ steps.target.outputs.date }}
 
       - name: 生成用户关闭标记
-        if: ${{ steps.run_task.outcome == 'success' && inputs.write_cached_only == true }}
+        if: ${{ steps.run_task.outcome == 'success' && inputs.write_cached_only == true && inputs.cached_is_complete != true }}
         shell: bash
         run: |
           mkdir -p .daily-closed
           touch ".daily-closed/${{ steps.target.outputs.date }}"
 
       - name: 保存用户关闭标记
-        if: ${{ steps.run_task.outcome == 'success' && inputs.write_cached_only == true }}
+        if: ${{ steps.run_task.outcome == 'success' && inputs.write_cached_only == true && inputs.cached_is_complete != true }}
         uses: actions/cache/save@v4
         with:
           path: .daily-closed

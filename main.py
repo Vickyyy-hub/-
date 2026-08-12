@@ -25,6 +25,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--check-feishu", action="store_true", help="只读验证飞书权限和字段，不写入")
     parser.add_argument("--backfill-daily-dates", action="store_true", help="仅按发布日期回填飞书日报日期，不调用AI")
     parser.add_argument("--write-cached-only", action="store_true", help="只写入已有AI缓存，不继续调用模型")
+    parser.add_argument("--cached-complete", action="store_true", help="缓存来自完整分析，写入成功后可标记完整日报")
     return parser.parse_args()
 
 
@@ -39,7 +40,7 @@ def main() -> int:
     if args.write_cached_only:
         target = date.fromisoformat(args.date) if args.date else datetime.now(SHANGHAI).date() - timedelta(days=1)
         sources = list(ADAPTERS) if args.sources == "all" else [item.strip() for item in args.sources.split(",") if item.strip()]
-        report = Pipeline(sources).write_cached(target)
+        report = Pipeline(sources).write_cached(target, complete_recovery=args.cached_complete)
         report.trigger_source = args.trigger_source
         Path("run-report.json").write_text(
             json.dumps(report.to_dict(), ensure_ascii=False, indent=2),

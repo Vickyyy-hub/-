@@ -378,12 +378,13 @@ class Pipeline:
         self,
         day: date,
         *,
+        complete_recovery: bool = False,
         report_path: Path = Path("run-report.json"),
     ) -> RunReport:
         report = RunReport(
             day.isoformat(),
             cached_only=True,
-            truncated_by_user=True,
+            truncated_by_user=not complete_recovery,
         )
         feishu = FeishuBitable(self.http)
         report.sources = self.discover(day)
