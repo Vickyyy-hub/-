@@ -1,6 +1,8 @@
 import time
 from datetime import date
 
+import requests
+
 from personal_growth.feishu import FeishuBitable
 from personal_growth.ai import (
     FILTER_STAGE,
@@ -477,3 +479,100 @@ def test_feishu_read_only_mode_never_creates_fields(monkeypatch):
     )
     client = FeishuBitable(object(), read_only=True)
     assert client.field_types == field_types
+
+
+def test_feishu_refreshes_token_before_expiry(monkeypatch):
+    client = object.__new__(FeishuBitable)
+    client.http = object()
+    client.base_url = "https://open.feishu.cn/open-apis"
+    client.headers = {"Authorization": "Bearer old"}
+    client.token = "old"
+    client.token_expires_at = 100
+    refreshed = []
+
+    def refresh():
+        refreshed.append(1)
+        client.token = "new"
+        client.headers["Authorization"] = "Bearer new"
+        client.token_expires_at = 10_000
+
+    class Response:
+        status_code = 200
+        headers = {}
+
+        @staticmethod
+        def json():
+            return {"code": 0, "data": {}}
+
+    client._refresh_token = refresh
+    client.http = type("Http", (), {"request": staticmethod(lambda *args, **kwargs: Response())})()
+    monkeypatch.setattr("personal_growth.feishu.clock.monotonic", lambda: 1_000)
+    assert client._api("GET", "/test")["code"] == 0
+    assert refreshed == [1]
+    assert client.headers["Authorization"] == "Bearer new"
+
+
+def test_feishu_refreshes_and_retries_once_on_expired_token(monkeypatch):
+    client = object.__new__(FeishuBitable)
+    client.base_url = "https://open.feishu.cn/open-apis"
+    client.headers = {"Authorization": "Bearer old"}
+    client.token = "old"
+    client.token_expires_at = 10_000
+    refreshed = []
+    calls = []
+
+    class Response:
+        headers = {"x-tt-logid": "log-1"}
+
+        def __init__(self, status_code, payload):
+            self.status_code = status_code
+            self.payload = payload
+            self.text = str(payload)
+
+        def json(self):
+            return self.payload
+
+    expired = Response(400, {"code": 99991663, "msg": "tenant_access_token expired"})
+    success = Response(200, {"code": 0, "data": {"ok": True}})
+
+    def request(*args, **kwargs):
+        calls.append(kwargs["headers"]["Authorization"])
+        if len(calls) == 1:
+            error = requests.HTTPError("400")
+            error.response = expired
+            raise error
+        return success
+
+    def refresh():
+        refreshed.append(1)
+        client.token = "new"
+        client.headers["Authorization"] = "Bearer new"
+        client.token_expires_at = 20_000
+
+    client.http = type("Http", (), {"request": staticmethod(request)})()
+    client._refresh_token = refresh
+    monkeypatch.setattr("personal_growth.feishu.clock.monotonic", lambda: 1_000)
+    assert client._api("POST", "/test", json={})["data"]["ok"] is True
+    assert refreshed == [1]
+    assert calls == ["Bearer old", "Bearer new"]
+
+
+def test_feishu_write_uses_small_independent_batches(monkeypatch):
+    client = object.__new__(FeishuBitable)
+    client.app_token = "app"
+    client.table_id = "table"
+    client.field_types = {"标题": 1}
+    calls = []
+    monkeypatch.setattr(
+        client,
+        "_api",
+        lambda method, path, **kwargs: calls.append(kwargs["json"]["records"])
+        or {"data": {"records": kwargs["json"]["records"]}},
+    )
+    articles = [
+        Article("虎嗅", f"文章{index}", f"https://example.com/{index}", from_epoch(1786195964 + index))
+        for index in range(123)
+    ]
+    written, failed = client.write(articles)
+    assert (written, failed) == (123, 0)
+    assert [len(batch) for batch in calls] == [50, 50, 23]

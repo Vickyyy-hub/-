@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import time as clock
 from datetime import date, datetime, time
 from typing import Any, Iterable
 
@@ -11,6 +12,9 @@ from .text import SHANGHAI, normalize_title, normalize_url
 
 class FeishuBitable:
     base_url = "https://open.feishu.cn/open-apis"
+    token_refresh_margin_seconds = 600
+    batch_size = 50
+    token_error_codes = {99991661, 99991663, 99991668}
     required_fields = {
         "核心干货": {"field_name": "核心干货", "type": 1},
         "来源名称": {"field_name": "来源名称", "type": 3},
@@ -27,8 +31,10 @@ class FeishuBitable:
         self.table_id = os.environ.get("FEISHU_TABLE_ID", "tblQ0GsmYdWzBukz")
         if not self.app_id or not self.app_secret:
             raise RuntimeError("缺少 FEISHU_APP_ID 或 FEISHU_APP_SECRET")
-        self.token = self._tenant_token()
-        self.headers = {"Authorization": f"Bearer {self.token}", "Content-Type": "application/json"}
+        self.token = ""
+        self.token_expires_at = 0.0
+        self.headers = {"Content-Type": "application/json"}
+        self._refresh_token()
         self.field_types = self._field_types()
         if read_only:
             self._validate_required_fields()
@@ -42,13 +48,73 @@ class FeishuBitable:
         ).json()
         if payload.get("code") != 0:
             raise RuntimeError(f"飞书授权失败：{payload}")
+        self.token_expires_at = clock.monotonic() + max(1, int(payload.get("expire", 7200)))
         return payload["tenant_access_token"]
 
+    def _refresh_token(self) -> None:
+        self.token = self._tenant_token()
+        self.headers["Authorization"] = f"Bearer {self.token}"
+
+    def _ensure_token(self) -> None:
+        if clock.monotonic() >= self.token_expires_at - self.token_refresh_margin_seconds:
+            self._refresh_token()
+
+    @classmethod
+    def _is_token_error(cls, status: int, payload: dict[str, Any]) -> bool:
+        code = payload.get("code")
+        message = str(payload.get("msg") or payload.get("message") or "").lower()
+        return (
+            status == 401
+            or code in cls.token_error_codes
+            or ("token" in message and any(word in message for word in ("expired", "invalid", "unauthorized")))
+        )
+
+    @staticmethod
+    def _response_detail(response: Any, payload: dict[str, Any]) -> str:
+        request_id = ""
+        if response is not None:
+            request_id = str(response.headers.get("x-tt-logid") or response.headers.get("x-request-id") or "")
+        detail = {
+            "http_status": getattr(response, "status_code", None),
+            "code": payload.get("code"),
+            "msg": payload.get("msg") or payload.get("message"),
+            "request_id": request_id or None,
+        }
+        return str({key: value for key, value in detail.items() if value is not None})
+
     def _api(self, method: str, path: str, **kwargs: Any) -> dict[str, Any]:
-        response = self.http.request(method, f"{self.base_url}{path}", headers=self.headers, **kwargs).json()
-        if response.get("code") != 0:
-            raise RuntimeError(f"飞书API失败：{response}")
-        return response
+        for attempt in range(2):
+            self._ensure_token()
+            response = None
+            payload: dict[str, Any] = {}
+            try:
+                response = self.http.request(
+                    method,
+                    f"{self.base_url}{path}",
+                    headers=self.headers,
+                    **kwargs,
+                )
+                payload = response.json()
+            except Exception as exc:
+                response = getattr(exc, "response", response)
+                if response is not None:
+                    try:
+                        payload = response.json()
+                    except (TypeError, ValueError):
+                        payload = {"msg": str(getattr(response, "text", ""))[:500]}
+                status = int(getattr(response, "status_code", 0) or 0)
+                if attempt == 0 and self._is_token_error(status, payload):
+                    self._refresh_token()
+                    continue
+                raise RuntimeError(f"飞书API HTTP失败：{self._response_detail(response, payload)}") from exc
+            status = int(getattr(response, "status_code", 200) or 200)
+            if payload.get("code") == 0:
+                return payload
+            if attempt == 0 and self._is_token_error(status, payload):
+                self._refresh_token()
+                continue
+            raise RuntimeError(f"飞书API失败：{self._response_detail(response, payload)}")
+        raise RuntimeError("飞书API失败：凭证刷新后仍无法调用")
 
     def _field_types(self) -> dict[str, int]:
         path = f"/bitable/v1/apps/{self.app_token}/tables/{self.table_id}/fields"
@@ -161,8 +227,8 @@ class FeishuBitable:
         written = 0
         failed = 0
         path = f"/bitable/v1/apps/{self.app_token}/tables/{self.table_id}/records/batch_create"
-        for index in range(0, len(records), 100):
-            batch = records[index : index + 100]
+        for index in range(0, len(records), self.batch_size):
+            batch = records[index : index + self.batch_size]
             try:
                 payload = self._api("POST", path, json={"records": batch})
                 written += len(payload["data"].get("records", []))
@@ -179,8 +245,8 @@ class FeishuBitable:
         updated = 0
         failed = 0
         path = f"/bitable/v1/apps/{self.app_token}/tables/{self.table_id}/records/batch_update"
-        for index in range(0, len(records), 100):
-            batch = records[index : index + 100]
+        for index in range(0, len(records), self.batch_size):
+            batch = records[index : index + self.batch_size]
             try:
                 payload = self._api("POST", path, json={"records": batch})
                 updated += len(payload["data"].get("records", []))
@@ -214,8 +280,8 @@ class FeishuBitable:
         updated = 0
         failed = 0
         path = f"/bitable/v1/apps/{self.app_token}/tables/{self.table_id}/records/batch_update"
-        for index in range(0, len(updates), 100):
-            batch = [item for item in updates[index : index + 100] if item["record_id"]]
+        for index in range(0, len(updates), self.batch_size):
+            batch = [item for item in updates[index : index + self.batch_size] if item["record_id"]]
             if not batch:
                 continue
             try:
