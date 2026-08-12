@@ -9,7 +9,7 @@ from typing import Any
 
 import requests
 
-from .evidence import NUMBER_RE, effective_chars, extract_numbers
+from .evidence import effective_chars, extract_numbers
 from .models import Article
 from .state import StateStore
 from .text import clean_text, parse_json_object
@@ -19,7 +19,7 @@ CATEGORIES = (
     "职业与效率", "消费与生活", "社会与文化", "全球与出海",
 )
 FILTER_VERSION = "filter_v2"
-SUMMARY_VERSION = "summary_v4"
+SUMMARY_VERSION = "summary_v5"
 FILTER_STAGE = "filter"
 SUMMARY_STAGE = "summary"
 FILTER_CORRECTION_MAX_TOKENS = 260
@@ -203,7 +203,8 @@ class ArkAnalyzer:
             "输出恰好三段连续正文，不要标题、标签、项目符号、JSON、开场白或结束语。"
             "总长度严格300到500个可见字符，目标340到420字，绝对不要超过480字。第一段写主体、时间、事件、数据和变化；"
             "第二段写行业、企业、市场、政策或供应链影响；第三段写1到3项可执行启示。"
-            "优先复用原文关键句，无数字则不编造，禁止空话和标题改写。证据不足时只输出：证据不足，无法生成可靠摘要"
+            "优先复用原文关键句，无数字则不编造，禁止空话和标题改写。"
+            "禁止使用‘相关时间’‘相关数值’等占位词；证据不足时只输出：证据不足，无法生成可靠摘要"
         )
         user = (
             f"标题：{article.title}\n来源：{article.source}\n发布日期：{article.published_at.isoformat()}\n\n"
@@ -254,25 +255,14 @@ class ArkAnalyzer:
             fitted.append("".join(chars).rstrip("，；：、。！？ ") + "。")
         return "\n\n".join(fitted)
 
-    @staticmethod
-    def _scrub_unverified_numbers(summary: str, evidence: str) -> str:
-        allowed = extract_numbers(evidence)
-
-        def replace(match: re.Match[str]) -> str:
-            raw = match.group(0)
-            normalized = raw.replace("％", "%").replace(",", "")
-            if normalized in allowed:
-                return raw
-            return "相关时间" if raw.endswith(("年", "月", "日", "天")) else "相关数值"
-
-        return NUMBER_RE.sub(replace, summary)
-
     @classmethod
     def validate_summary(cls, raw: str, evidence: str) -> str:
-        summary = cls._scrub_unverified_numbers(cls._clean_summary(raw), evidence)
+        summary = cls._clean_summary(raw)
         summary = cls._fit_summary_length(summary)
         if summary == "证据不足，无法生成可靠摘要":
             raise ValueError("证据不足")
+        if "相关时间" in summary or "相关数值" in summary:
+            raise ValueError("摘要包含占位词")
         size = effective_chars(summary)
         if not 300 <= size <= 500:
             raise ValueError(f"摘要字数不合格：{size}")
@@ -343,6 +333,7 @@ class ArkAnalyzer:
                 correction = (
                     f"上一版摘要未通过校验：{first_error}。\n上一版：\n{raw}\n\n"
                     f"原证据：\n{summary_evidence}\n\n严格重写为三段、340到420字，绝对不超过480字，只输出正文。"
+                    "删除证据中不存在的数字，禁止用‘相关时间’或‘相关数值’代替。"
                 )
                 corrected = self._request(system, correction, 900, SUMMARY_STAGE)
                 try:

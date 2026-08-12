@@ -313,11 +313,26 @@ def test_summary_safely_fits_small_overflow_without_second_call():
     assert fitted.endswith("。")
 
 
-def test_summary_scrubs_numbers_not_present_in_evidence():
+def test_summary_rejects_numbers_not_present_in_evidence_without_placeholders():
     summary = "甲" * 100 + "10日发布。" + "\n\n" + "乙" * 105 + "\n\n" + "丙" * 105
-    fitted = ArkAnalyzer.validate_summary(summary, "原文没有日期数字")
-    assert "10日" not in fitted
-    assert "相关时间" in fitted
+    try:
+        ArkAnalyzer.validate_summary(summary, "原文没有日期数字")
+    except ValueError as exc:
+        assert "证据外数字" in str(exc)
+        assert "相关时间" not in summary
+        assert "相关数值" not in summary
+    else:
+        raise AssertionError("证据外数字必须触发纠正，不能替换成占位词")
+
+
+def test_summary_rejects_legacy_placeholder_phrases():
+    summary = "甲" * 95 + "相关时间相关时间发布的相关数值。" + "\n\n" + "乙" * 105 + "\n\n" + "丙" * 105
+    try:
+        ArkAnalyzer.validate_summary(summary, "原文证据")
+    except ValueError as exc:
+        assert "占位词" in str(exc)
+    else:
+        raise AssertionError("占位词摘要必须触发纠正")
 
 
 def test_state_cache_persists_stages_and_progress(tmp_path):
@@ -447,7 +462,7 @@ def test_analyzer_uses_stage_cache_without_api_call(monkeypatch, tmp_path):
     summary = "甲" * 105 + "\n\n" + "乙" * 105 + "\n\n" + "丙" * 105
     store.put_stage("hash", "filter", f"{analyzer.model}:filter_v2", filter_result)
     store.put_stage(
-        "hash", "summary", f"{analyzer.model}:summary_v4",
+        "hash", "summary", f"{analyzer.model}:summary_v5",
         {"status": "入选", "core_content": summary, "summary_chars": 315},
     )
     monkeypatch.setattr(analyzer, "_request", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("不应调用API")))
