@@ -29,6 +29,7 @@ from .text import clean_text, normalize_title, normalize_url, similarity
 
 class Pipeline:
     ANALYSIS_SOURCE_ORDER = ("虎嗅", "少数派", "界面新闻", "IT之家", "钛媒体", "36氪")
+    PRIMARY_SOURCE = "虎嗅"
 
     def __init__(self, source_keys: list[str]) -> None:
         self.http = HttpClient(timeout=int(os.environ.get("HTTP_TIMEOUT", "35")))
@@ -119,18 +120,25 @@ class Pipeline:
         for items in groups.values():
             items.sort(key=lambda item: (item.published_at, item.url), reverse=True)
 
-        known = [source for source in cls.ANALYSIS_SOURCE_ORDER if source in groups]
-        unknown = sorted(set(groups) - set(known))
-        source_order = known + unknown
+        other_known = [
+            source for source in cls.ANALYSIS_SOURCE_ORDER
+            if source != cls.PRIMARY_SOURCE and source in groups
+        ]
+        unknown = sorted(set(groups) - set(cls.ANALYSIS_SOURCE_ORDER))
+        other_order = other_known + unknown
+        primary = groups.get(cls.PRIMARY_SOURCE, [])
+        other_index = 0
         ordered: list[Article] = []
-        while True:
-            progressed = False
-            for source in source_order:
-                if groups[source]:
-                    ordered.append(groups[source].pop(0))
-                    progressed = True
-            if not progressed:
-                break
+        while primary or any(groups[source] for source in other_order):
+            if primary:
+                ordered.append(primary.pop(0))
+            if other_order:
+                for _ in range(len(other_order)):
+                    source = other_order[other_index % len(other_order)]
+                    other_index += 1
+                    if groups[source]:
+                        ordered.append(groups[source].pop(0))
+                        break
         return ordered
 
     @classmethod
@@ -347,7 +355,7 @@ class Pipeline:
         if (
             huxiu and huxiu.ai_pending > 0 and huxiu.ai_processed == 0
         ):
-            huxiu.errors.append("虎嗅存在待分析正文但AI处理数为0，六站轮询或断点恢复异常")
+            huxiu.errors.append("虎嗅存在待分析正文但AI处理数为0，五站轮询或断点恢复异常")
         elif (
             huxiu and huxiu.ai_processed > 0 and not huxiu.errors
             and huxiu.selected_main + huxiu.selected_incremental == 0

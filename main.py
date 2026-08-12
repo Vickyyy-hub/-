@@ -6,7 +6,7 @@ import sys
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
-from personal_growth.adapters import ADAPTERS
+from personal_growth.adapters import ADAPTERS, DAILY_SOURCE_KEYS
 from personal_growth.feishu import FeishuBitable
 from personal_growth.http import HttpClient
 from personal_growth.pipeline import Pipeline
@@ -14,9 +14,13 @@ from personal_growth.text import SHANGHAI
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="六站个人成长资讯自动化")
+    parser = argparse.ArgumentParser(description="五站个人成长资讯自动化")
     parser.add_argument("--date", help="处理日期 YYYY-MM-DD；默认北京时间前一自然日")
-    parser.add_argument("--sources", default="all", help="all 或逗号分隔：huxiu,sspai,jiemian,ithome,tmtpost,36kr")
+    parser.add_argument(
+        "--sources",
+        default="all",
+        help="all=每日五站，或逗号分隔：huxiu,sspai,jiemian,tmtpost,36kr；ithome仅供手动诊断",
+    )
     parser.add_argument("--trigger-source", default="manual", help="运行触发来源，仅用于报告审计")
     parser.add_argument("--dry-run", action="store_true", help="执行采集和AI，但不写飞书")
     parser.add_argument("--collect-only", action="store_true", help="只采集并验证正文，不调用AI、不写飞书")
@@ -29,6 +33,10 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def resolve_sources(value: str) -> list[str]:
+    return list(DAILY_SOURCE_KEYS) if value == "all" else [item.strip() for item in value.split(",") if item.strip()]
+
+
 def main() -> int:
     args = parse_args()
     if args.backfill_daily_dates:
@@ -39,7 +47,7 @@ def main() -> int:
         return 2 if failed else 0
     if args.write_cached_only:
         target = date.fromisoformat(args.date) if args.date else datetime.now(SHANGHAI).date() - timedelta(days=1)
-        sources = list(ADAPTERS) if args.sources == "all" else [item.strip() for item in args.sources.split(",") if item.strip()]
+        sources = resolve_sources(args.sources)
         report = Pipeline(sources).write_cached(target, complete_recovery=args.cached_complete)
         report.trigger_source = args.trigger_source
         Path("run-report.json").write_text(
@@ -53,7 +61,7 @@ def main() -> int:
         print(json.dumps(status, ensure_ascii=False, indent=2))
         return 0
     target = date.fromisoformat(args.date) if args.date else datetime.now(SHANGHAI).date() - timedelta(days=1)
-    sources = list(ADAPTERS) if args.sources == "all" else [item.strip() for item in args.sources.split(",") if item.strip()]
+    sources = resolve_sources(args.sources)
     unknown = set(sources) - set(ADAPTERS)
     if unknown:
         raise SystemExit(f"未知来源：{', '.join(sorted(unknown))}")

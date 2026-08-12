@@ -1,4 +1,4 @@
-name: 个人成长六站每日资讯
+name: 个人成长五站每日资讯
 
 on:
   schedule:
@@ -15,7 +15,7 @@ on:
         required: false
         type: string
       sources:
-        description: "all 或逗号分隔的来源键"
+        description: "all=每日五站，或逗号分隔的来源键；ithome仅手动诊断"
         required: false
         default: "all"
         type: string
@@ -227,8 +227,9 @@ jobs:
           if int(report.get("write_failed", 0)):
               errors.append(f"write_failed={report['write_failed']}")
           sources = report.get("sources") or {}
-          if len(sources) != 6:
-              errors.append(f"sources={len(sources)}")
+          expected_sources = {"huxiu", "sspai", "jiemian", "tmtpost", "36kr"}
+          if set(sources) != expected_sources:
+              errors.append(f"sources={sorted(sources)}")
           incomplete = [name for name, data in sources.items() if not data.get("coverage_complete")]
           if incomplete:
               errors.append("coverage_incomplete=" + ",".join(incomplete))
@@ -262,8 +263,9 @@ jobs:
           if int(report.get("write_failed", 0)):
               errors.append(f"write_failed={report['write_failed']}")
           sources = report.get("sources") or {}
-          if len(sources) != 6:
-              errors.append(f"sources={len(sources)}")
+          expected_sources = {"huxiu", "sspai", "jiemian", "tmtpost", "36kr"}
+          if set(sources) != expected_sources:
+              errors.append(f"sources={sorted(sources)}")
           incomplete = [name for name, data in sources.items() if not data.get("coverage_complete")]
           if incomplete:
               errors.append("coverage_incomplete=" + ",".join(incomplete))

@@ -559,3 +559,7 @@ ADAPTERS = {
     "tmtpost": TMTPostAdapter,
     "36kr": Kr36Adapter,
 }
+
+# "all" means the production daily set. IT Home remains available only when
+# explicitly requested for historical diagnostics.
+DAILY_SOURCE_KEYS = ("huxiu", "sspai", "jiemian", "tmtpost", "36kr")

@@ -3,6 +3,8 @@ from datetime import date
 
 import requests
 
+from main import resolve_sources
+from personal_growth.adapters import DAILY_SOURCE_KEYS
 from personal_growth.feishu import FeishuBitable
 from personal_growth.ai import (
     FILTER_STAGE,
@@ -183,19 +185,27 @@ def test_manual_limit_samples_sources_round_robin():
     sampled = Pipeline._sample_articles(items, 6)
     assert len(sampled) == 6
     assert {item.source for item in sampled} == {"虎嗅", "少数派", "界面新闻"}
-    assert all(sum(item.source == source for item in sampled) == 2 for source in {"虎嗅", "少数派", "界面新闻"})
+    assert sum(item.source == "虎嗅" for item in sampled) == 3
 
 
-def test_daily_analysis_order_round_robins_all_six_sources():
-    sources = Pipeline.ANALYSIS_SOURCE_ORDER
+def test_daily_defaults_exclude_ithome_but_manual_diagnostic_remains_available():
+    assert resolve_sources("all") == list(DAILY_SOURCE_KEYS)
+    assert "ithome" not in resolve_sources("all")
+    assert resolve_sources("ithome") == ["ithome"]
+
+
+def test_daily_analysis_order_gives_huxiu_half_of_early_slots():
+    sources = ("虎嗅", "少数派", "界面新闻", "钛媒体", "36氪")
     items = [
         Article(source, f"{source}-{index}", f"https://example.com/{source}/{index}", from_epoch(1786195964 + index))
         for source in reversed(sources)
-        for index in range(3)
+        for index in range(6)
     ]
     ordered = Pipeline._analysis_order(items)
-    assert [item.source for item in ordered[:6]] == list(sources)
-    assert all(sum(item.source == source for item in ordered[:12]) == 2 for source in sources)
+    assert sum(item.source == "虎嗅" for item in ordered[:10]) == 5
+    assert [item.source for item in ordered[:10:2]] == ["虎嗅"] * 5
+    assert [item.source for item in ordered[:8:2]] == ["虎嗅"] * 4
+    assert [item.source for item in ordered[1:9:2]] == ["少数派", "界面新闻", "钛媒体", "36氪"]
     for source in sources:
         published = [item.published_at for item in ordered if item.source == source]
         assert published == sorted(published, reverse=True)
@@ -203,11 +213,11 @@ def test_daily_analysis_order_round_robins_all_six_sources():
 
 def test_interrupted_analysis_resumes_from_same_round_robin_manifest(monkeypatch, tmp_path):
     monkeypatch.setenv("STATE_DB", str(tmp_path / "state.sqlite"))
-    sources = Pipeline.ANALYSIS_SOURCE_ORDER
+    sources = ("虎嗅", "少数派", "界面新闻", "钛媒体", "36氪")
     articles = [
         Article(source, f"{source}-{index}", f"https://example.com/{source}/{index}", from_epoch(1786195964 + index), body="正文" * 500)
         for source in sources
-        for index in range(3)
+        for index in range(6)
     ]
     created = []
 
@@ -225,7 +235,7 @@ def test_interrupted_analysis_resumes_from_same_round_robin_manifest(monkeypatch
 
         def analyze(self, article, filter_evidence, summary_evidence, cache_key, state):
             self.calls.append(article.source)
-            if len(created) == 1 and len(self.calls) == 13:
+            if len(created) == 1 and len(self.calls) == 11:
                 raise ArkAPIError("模拟中断")
             result = {
                 "status": "入选", "valuable": True, "reason": "有增量",
@@ -244,21 +254,21 @@ def test_interrupted_analysis_resumes_from_same_round_robin_manifest(monkeypatch
 
     first = RunReport("2026-08-11")
     first.sources = {source: SourceResult(source) for source in sources}
-    analyzed, complete = pipeline.analyze(articles, first, job_id="daily-six")
+    analyzed, complete = pipeline.analyze(articles, first, job_id="daily-five")
     assert complete is False
-    assert len(analyzed) == 12
-    assert all(result.ai_processed == 2 for result in first.sources.values())
-    assert all(result.ai_pending == 1 for result in first.sources.values())
+    assert len(analyzed) == 10
+    assert first.sources["虎嗅"].ai_processed == 5
+    assert all(result.ai_processed > 0 for result in first.sources.values())
 
     second = RunReport("2026-08-11")
     second.sources = {source: SourceResult(source) for source in sources}
-    analyzed, complete = pipeline.analyze(articles, second, job_id="daily-six")
+    analyzed, complete = pipeline.analyze(articles, second, job_id="daily-five")
     assert complete is True
-    assert len(analyzed) == 18
-    assert len(created[1].calls) == 6
-    assert all(result.ai_processed == 3 for result in second.sources.values())
+    assert len(analyzed) == 30
+    assert len(created[1].calls) == 20
+    assert all(result.ai_processed == 6 for result in second.sources.values())
     assert all(result.ai_pending == 0 for result in second.sources.values())
-    assert all(result.cache_hits == 4 for result in second.sources.values())
+    assert sum(result.cache_hits for result in second.sources.values()) == 20
 
 
 def test_evidence_packets_cover_sections_and_stay_bounded():
