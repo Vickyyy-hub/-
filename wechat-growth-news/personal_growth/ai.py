@@ -13,11 +13,11 @@ from .evidence import effective_chars, extract_numbers
 from .config import model_config, summary_config
 from .models import Article
 from .state import StateStore
-from .text import clean_text, parse_json_object
+from .text import SHANGHAI, clean_text, parse_json_object
 
 CATEGORIES = ("心理与关系", "健康与生活", "社会与地理", "商业与趋势", "文化与思想")
 FILTER_VERSION = "filter_wechat_v1"
-SUMMARY_VERSION = "summary_wechat_v2"
+SUMMARY_VERSION = "summary_wechat_v3"
 FILTER_STAGE = "filter"
 SUMMARY_STAGE = "summary"
 FILTER_CORRECTION_MAX_TOKENS = 260
@@ -297,6 +297,12 @@ class ArkAnalyzer:
             raise ValueError(f"摘要出现证据外数字：{sorted(invented)}")
         return summary
 
+    @staticmethod
+    def _validation_evidence(article: Article) -> str:
+        published = article.published_at.astimezone(SHANGHAI)
+        published_zh = f"{published.year}年{published.month}月{published.day}日"
+        return f"{article.title}\n{published.isoformat()}\n{published_zh}\n{article.body}"
+
     def analyze(
         self,
         article: Article,
@@ -333,7 +339,8 @@ class ArkAnalyzer:
                         "invalid_ai": True,
                         "invalid_ai_error": clean_text(str(second_error))[:200],
                     }
-            state.put_stage(cache_key, FILTER_STAGE, f"{self.model}:{FILTER_VERSION}", filter_result)
+            if not filter_result.get("invalid_ai"):
+                state.put_stage(cache_key, FILTER_STAGE, f"{self.model}:{FILTER_VERSION}", filter_result)
         else:
             self.cache_hits += 1
         if not filter_result.get("valuable"):
@@ -343,15 +350,12 @@ class ArkAnalyzer:
         if summary_result is None:
             system, user = self._summary_prompts(article, summary_evidence)
             raw = self._request(system, user, 900, SUMMARY_STAGE)
-            validation_evidence = (
-                f"{article.title}\n{article.published_at.isoformat()}\n{article.body}"
-            )
+            validation_evidence = self._validation_evidence(article)
             try:
                 summary = self.validate_summary(raw, validation_evidence)
             except ValueError as first_error:
                 if str(first_error) == "证据不足":
                     summary_result = {"status": "淘汰", "reason": "摘要证据不足"}
-                    state.put_stage(cache_key, SUMMARY_STAGE, f"{self.model}:{SUMMARY_VERSION}", summary_result)
                     return {**filter_result, **summary_result, "valuable": False}
                 correction = (
                     f"上一版摘要未通过校验：{first_error}。\n上一版：\n{raw}\n\n"
@@ -363,7 +367,6 @@ class ArkAnalyzer:
                     summary = self.validate_summary(corrected, validation_evidence)
                 except ValueError as second_error:
                     summary_result = {"status": "淘汰", "reason": f"摘要校验失败：{second_error}"[:80]}
-                    state.put_stage(cache_key, SUMMARY_STAGE, f"{self.model}:{SUMMARY_VERSION}", summary_result)
                     return {**filter_result, **summary_result, "valuable": False}
             summary_result = {"status": "入选", "core_content": summary, "summary_chars": effective_chars(summary)}
             state.put_stage(cache_key, SUMMARY_STAGE, f"{self.model}:{SUMMARY_VERSION}", summary_result)

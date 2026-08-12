@@ -7,7 +7,7 @@ import pytest
 from personal_growth.adapters import ADAPTERS, ExcludedArticle
 from personal_growth.adapters_custom.simple_psychology import SimplePsychologyAdapter
 from personal_growth.ai import ArkAnalyzer
-from personal_growth.evidence import content_hash, effective_chars, evidence_packets
+from personal_growth.evidence import content_hash, effective_chars, evidence_packets, extract_numbers
 from personal_growth.feishu import FeishuBitable
 from personal_growth.models import Article, RunReport, SourceResult
 from personal_growth.outputs import article_row
@@ -120,6 +120,13 @@ def test_summary_requires_three_paragraphs_and_evidence_numbers():
         ArkAnalyzer.validate_summary("甲" * 100 + "10日" + "\n\n" + "乙" * 105 + "\n\n" + "丙" * 105, "没有数字")
     supported = "甲" * 95 + "49.9元" + "\n\n" + "乙" * 105 + "\n\n" + "丙" * 105
     assert ArkAnalyzer.validate_summary(supported, "原文价格为49.9元") == supported
+
+
+def test_validation_evidence_accepts_trusted_publish_date():
+    value = article()
+    value.published_at = datetime(2026, 8, 12, 9, tzinfo=SHANGHAI)
+    evidence = ArkAnalyzer._validation_evidence(value)
+    assert {"2026年", "8月", "12日"} <= extract_numbers(evidence)
 
 
 def test_evidence_and_cache_identity_include_body():
