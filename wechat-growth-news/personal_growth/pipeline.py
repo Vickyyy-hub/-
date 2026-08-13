@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Iterable
 
 from .adapters import ADAPTERS, ExcludedArticle, SourceAdapter
-from .ai import ArkAPIError, ArkAnalyzer, ArkRateLimitError
+from .ai import ArkAPIError, ArkAnalyzer, ArkContentSafetyError, ArkRateLimitError
 from .config import load_config, output_config, source_config
 from .evidence import content_hash, effective_chars, evidence_packets
 from .feishu import FeishuBitable
@@ -119,6 +119,7 @@ class Pipeline:
     ) -> tuple[list[Article], list[Article]]:
         ready: list[Article] = []
         pending: list[Article] = []
+        attempted_by_source: dict[str, int] = defaultdict(int)
 
         def fetch(article: Article) -> tuple[Article, str, str, bool]:
             key = self.key_by_source[article.source]
@@ -152,18 +153,25 @@ class Pipeline:
                 if excluded:
                     source_result.excluded += 1
                     continue
+                attempted_by_source[article.source] += 1
                 if error:
                     article.record_status = "正文待补全"
                     article.meta["failure_reason"] = error
                     article.ai_result = {"topics": [], "category": "", "core_content": ""}
                     source_result.body_failed += 1
-                    source_result.errors.append(f"正文失败 {article.url}: {error}")
+                    source_result.body_unavailable_skipped += 1
+                    source_result.body_unavailable_items.append({"title": article.title, "url": article.url})
+                    source_result.warnings.append(f"正文待补全 {article.url}: {error}")
                     pending.append(article)
                     continue
                 article.body = body
                 article.meta["failure_reason"] = ""
                 source_result.body_success += 1
                 ready.append(article)
+        for source, attempted in attempted_by_source.items():
+            source_result = results[self.key_by_source[source]]
+            if attempted >= 2 and source_result.body_failed == attempted and source_result.body_success == 0:
+                source_result.errors.append(f"站点正文整体不可用：目标日期{attempted}篇文章全部失败")
         return self._dedupe(ready), self._dedupe(pending)
 
     def _analysis_order(self, articles: Iterable[Article]) -> list[Article]:
@@ -224,6 +232,15 @@ class Pipeline:
                 state.save_progress(job_id, manifest, index, article.url, "running")
                 try:
                     result = analyzer.analyze(article, filter_evidence, summary_evidence, cache_key, state)
+                except ArkContentSafetyError as exc:
+                    reason = str(exc)
+                    pending.append(self._mark_ai_pending(article, reason))
+                    source_result.ai_pending -= 1
+                    source_result.content_safety_skipped += 1
+                    source_result.content_safety_items.append({"title": article.title, "url": article.url})
+                    source_result.warnings.append(f"内容安全待重试 {article.url}: {reason}")
+                    state.save_progress(job_id, manifest, index + 1, None, "running")
+                    continue
                 except (ArkRateLimitError, ArkAPIError, RuntimeError) as exc:
                     reason = f"AI服务失败：{exc}"
                     source_result.errors.append(f"{reason[:300]} {article.url}")
@@ -246,7 +263,10 @@ class Pipeline:
                     source_result.selected_main += 1
                 elif result.get("invalid_ai") or reason.startswith("摘要"):
                     pending.append(self._mark_ai_pending(article, reason or "AI输出格式错误"))
-                    source_result.errors.append(f"AI待重试 {article.url}: {reason}")
+                    source_result.warnings.append(f"AI待重试 {article.url}: {reason}")
+                    if result.get("invalid_ai"):
+                        source_result.invalid_ai_skipped += 1
+                        source_result.invalid_ai_items.append({"title": article.title, "url": article.url})
                     report.summary_rejected += 1
                 else:
                     source_result.excluded += 1
@@ -282,6 +302,8 @@ class Pipeline:
         report.sources = self.discover(day)
         candidates = self._candidate_articles(report.sources, feishu, day, report)
         ready, body_pending = self.fetch_bodies(report.sources, candidates)
+        report.body_pending_count = len(body_pending)
+        report.body_unavailable_skipped = sum(item.body_unavailable_skipped for item in report.sources.values())
         if max_articles > 0:
             ready = self._analysis_order(ready)[:max_articles]
             report.truncated_by_user = True
@@ -295,6 +317,9 @@ class Pipeline:
             report,
             job_id=f"{day.isoformat()}:{'dry' if dry_run else 'daily'}:{'-'.join(sorted(self.adapters))}",
         )
+        report.ai_retry_count = len(ai_pending)
+        report.content_safety_skipped = sum(item.content_safety_skipped for item in report.sources.values())
+        report.invalid_ai_skipped = sum(item.invalid_ai_skipped for item in report.sources.values())
         records = self._dedupe(completed + body_pending + ai_pending)
         report.selected = len(completed)
         lengths = [effective_chars(str((article.ai_result or {}).get("core_content") or "")) for article in completed]
@@ -315,7 +340,7 @@ class Pipeline:
             creates = [article for article in records if not article.record_id]
             report.written, write_failed = feishu.write(creates)
             report.updated, update_failed = feishu.update(updates)
-            missing = feishu.verify(records)
+            missing = feishu.verify_urls(records)
             report.write_failed = max(write_failed + update_failed, len(missing))
             report.update_failed = update_failed
 

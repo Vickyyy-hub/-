@@ -1,8 +1,18 @@
 name: 公众号每日资讯模板校验入口
+run-name: 公众号模板校验 · ${{ inputs.target_date || '自动日期' }} · ${{ inputs.trigger_source || github.event_name }}
 
 on:
   schedule:
     - cron: "30 0,1 * * *"
+  workflow_dispatch:
+    inputs:
+      target_date:
+        required: false
+        type: string
+      trigger_source:
+        required: false
+        default: manual
+        type: string
 
 env:
   ARK_API_KEY: ${{ secrets.ARK_API_KEY }}
@@ -26,6 +36,21 @@ jobs:
           expected_sources = {key for key, value in config["sources"].items() if value.get("enabled")}
           print(sorted(expected_sources))
           PY
+      - name: 验证完整日报
+        id: validate
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          report_path = Path("run-report.json")
+          if report_path.exists():
+              report = json.loads(report_path.read_text())
+              assert not report.get("write_failed")
+              assert all(item.get("coverage_complete") for item in report.get("sources", {}).values())
+          PY
+      - name: 完成标记仅在验收通过后生成
+        if: ${{ steps.validate.outcome == 'success' }}
+        run: mkdir -p .daily-complete
       - uses: actions/cache/save@v4
         with:
           path: .state

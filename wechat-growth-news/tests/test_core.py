@@ -6,7 +6,7 @@ import pytest
 
 from personal_growth.adapters import ADAPTERS, ExcludedArticle
 from personal_growth.adapters_custom.simple_psychology import SimplePsychologyAdapter
-from personal_growth.ai import ArkAnalyzer
+from personal_growth.ai import ArkAnalyzer, ArkContentSafetyError
 from personal_growth.evidence import content_hash, effective_chars, evidence_packets, extract_numbers
 from personal_growth.feishu import FeishuBitable
 from personal_growth.models import Article, RunReport, SourceResult
@@ -22,6 +22,15 @@ class Response:
 
     def json(self):
         return self.payload
+
+
+class SafetyResponse:
+    status_code = 400
+    text = '{"error":{"code":"InputTextSensitiveContentDetected"}}'
+    headers = {}
+
+    def json(self):
+        return {"error": {"code": "InputTextSensitiveContentDetected"}}
 
 
 class FakeHttp:
@@ -106,11 +115,63 @@ def test_pipeline_dedupes_by_either_url_or_title_but_keeps_distinct_articles():
     assert distinct in kept
 
 
+def test_body_failure_is_warning_but_whole_source_failure_is_systemic():
+    class BrokenAdapter:
+        def fetch_body(self, _article):
+            raise RuntimeError("上游正文不可用")
+
+    pipeline = object.__new__(Pipeline)
+    pipeline.adapters = {"simple_psychology": BrokenAdapter()}
+    pipeline.key_by_source = {"简单心理": "simple_psychology"}
+
+    single_result = SourceResult("简单心理", coverage_complete=True)
+    ready, pending = pipeline.fetch_bodies(
+        {"simple_psychology": single_result},
+        [article("单篇", "https://mp.weixin.qq.com/s/one")],
+    )
+    assert ready == [] and len(pending) == 1
+    assert single_result.errors == []
+    assert len(single_result.warnings) == 1
+
+    whole_result = SourceResult("简单心理", coverage_complete=True)
+    pipeline.fetch_bodies(
+        {"simple_psychology": whole_result},
+        [
+            article("第一篇", "https://mp.weixin.qq.com/s/first"),
+            article("第二篇", "https://mp.weixin.qq.com/s/second"),
+        ],
+    )
+    assert whole_result.errors == ["站点正文整体不可用：目标日期2篇文章全部失败"]
+    assert whole_result.body_unavailable_skipped == 2
+
+
 def test_filter_keeps_valid_low_score_article_and_uses_fixed_categories():
     raw = '{"status":"入选","reason":"有效文章","event_key":"心理机制分析","topics":["心理"],"category":"心理与关系","unique_points":[],"scores":{"importance":1,"information_gain":1,"social_impact":1,"actionability":1,"evidence_density":1}}'
     result = ArkAnalyzer._validate_filter(raw)
     assert result["valuable"] is True
     assert result["category"] == "心理与关系"
+
+
+def test_ark_content_safety_is_a_distinct_article_error(monkeypatch):
+    analyzer = object.__new__(ArkAnalyzer)
+    analyzer.max_429_retries = 0
+    analyzer.minimum_interval = 0
+    analyzer.last_request_at = 0
+    analyzer.filter_calls = 0
+    analyzer.summary_calls = 0
+    analyzer.rate_limit_count = 0
+    analyzer.consecutive_429 = 0
+    analyzer.circuit_limit = 3
+    analyzer.backoff = [0]
+    analyzer.retry_wait_seconds = 0
+    analyzer.timeout = 1
+    analyzer.url = "https://ark.test"
+    analyzer.api_key = "test"
+    analyzer.model = "test"
+    analyzer.provider = "volcengine_responses"
+    analyzer.session = type("Session", (), {"post": lambda self, *args, **kwargs: SafetyResponse()})()
+    with pytest.raises(ArkContentSafetyError):
+        analyzer._request("system", "user", 10, "filter")
 
 
 def test_summary_requires_three_paragraphs_and_evidence_numbers():
@@ -215,9 +276,32 @@ def test_feishu_writes_in_small_batches(monkeypatch):
     assert [len(batch) for batch in calls] == [50, 50, 23]
 
 
-def test_run_report_is_partial_for_body_failure():
-    report = RunReport("2026-08-12", sources={"simple_psychology": SourceResult("简单心理", coverage_complete=True, body_failed=1)})
-    assert report.partial is True
+def test_run_report_separates_article_degradation_from_system_failure():
+    report = RunReport(
+        "2026-08-12",
+        body_pending_count=1,
+        sources={"simple_psychology": SourceResult("简单心理", coverage_complete=True, body_failed=1)},
+    )
+    assert report.degraded is True
+    assert report.partial is False
+    assert report.to_dict()["body_pending_count"] == 1
+
+
+def test_run_report_is_partial_for_coverage_ai_or_output_failure():
+    coverage = RunReport(
+        "2026-08-12",
+        sources={"simple_psychology": SourceResult("简单心理", coverage_complete=False)},
+    )
+    assert coverage.partial is True
+    ai = RunReport(
+        "2026-08-12",
+        pending_articles=2,
+        sources={"simple_psychology": SourceResult("简单心理", coverage_complete=True, errors=["AI服务失败"])},
+    )
+    assert ai.partial is True
+    assert ai.system_errors == ["简单心理: AI服务失败"]
+    output = RunReport("2026-08-12", write_failed=1)
+    assert output.partial is True
 
 
 def test_normalization_is_stable():

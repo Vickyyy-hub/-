@@ -34,6 +34,10 @@ class ArkAPIError(RuntimeError):
     pass
 
 
+class ArkContentSafetyError(RuntimeError):
+    pass
+
+
 class ArkAnalyzer:
     def __init__(self) -> None:
         config = model_config()
@@ -127,6 +131,8 @@ class ArkAnalyzer:
                 continue
 
             detail = response.text[:1600]
+            if "InputTextSensitiveContentDetected" in detail:
+                raise ArkContentSafetyError("豆包输入内容安全拦截")
             if response.status_code == 429:
                 self.rate_limit_count += 1
                 self.consecutive_429 += 1
@@ -157,6 +163,8 @@ class ArkAnalyzer:
             except json.JSONDecodeError as exc:
                 raise ArkAPIError(f"豆包返回非JSON：{detail}") from exc
             if payload.get("error"):
+                if "InputTextSensitiveContentDetected" in str(payload["error"]):
+                    raise ArkContentSafetyError("豆包输入内容安全拦截")
                 raise ArkAPIError(f"豆包接口错误：{payload['error']}")
             self.consecutive_429 = 0
             return self._chat_output_text(payload) if self.provider == "openai_chat" else self._output_text(payload)

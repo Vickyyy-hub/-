@@ -1,10 +1,16 @@
 name: 公众号每日资讯
+run-name: 公众号每日资讯 · ${{ inputs.target_date || '自动日期' }} · ${{ inputs.trigger_source || github.event_name }}
 
 on:
   schedule:
     - cron: "30 0,1 * * *"
   workflow_dispatch:
     inputs:
+      trigger_source:
+        description: "触发来源或Cloudflare运行阶段"
+        required: false
+        default: "manual"
+        type: string
       target_date:
         description: "处理日期（北京时间 YYYY-MM-DD；留空为前一日）"
         required: false
@@ -148,7 +154,7 @@ jobs:
             python main.py --check-feishu
             exit 0
           fi
-          args=(--date "${{ steps.target.outputs.date }}" --sources "${{ inputs.sources || 'all' }}" --trigger-source "${{ github.event_name }}")
+          args=(--date "${{ steps.target.outputs.date }}" --sources "${{ inputs.sources || 'all' }}" --trigger-source "${{ inputs.trigger_source || github.event_name }}")
           [[ "${{ inputs.dry_run }}" == "true" ]] && args+=(--dry-run)
           [[ "${{ inputs.collect_only }}" == "true" ]] && args+=(--collect-only)
           [[ "${{ inputs.max_articles || '0' }}" != "0" ]] && args+=(--max-articles "${{ inputs.max_articles }}")
@@ -169,6 +175,9 @@ jobs:
               errors.append("partial=true")
           if set(report.get("sources") or {}) != expected_sources:
               errors.append("来源集合不完整")
+          incomplete = [key for key, value in (report.get("sources") or {}).items() if not value.get("coverage_complete")]
+          if incomplete:
+              errors.append(f"来源覆盖不完整={incomplete}")
           if int(report.get("write_failed", 0)):
               errors.append(f"write_failed={report['write_failed']}")
           if int(report.get("selected", 0)) and not (300 <= int(report.get("summary_char_min", 0)) <= int(report.get("summary_char_max", 0)) <= 500):

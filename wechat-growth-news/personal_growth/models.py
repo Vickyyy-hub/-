@@ -38,6 +38,10 @@ class SourceResult:
     event_duplicates: int = 0
     invalid_ai_skipped: int = 0
     invalid_ai_items: list[dict[str, str]] = field(default_factory=list)
+    content_safety_skipped: int = 0
+    content_safety_items: list[dict[str, str]] = field(default_factory=list)
+    body_unavailable_skipped: int = 0
+    body_unavailable_items: list[dict[str, str]] = field(default_factory=list)
     coverage_complete: bool = False
     articles: list[Article] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
@@ -67,6 +71,8 @@ class RunReport:
     rate_limit_count: int = 0
     retry_wait_seconds: float = 0.0
     pending_articles: int = 0
+    body_pending_count: int = 0
+    ai_retry_count: int = 0
     checkpoint_index: int = 0
     summary_char_min: int = 0
     summary_char_max: int = 0
@@ -76,6 +82,20 @@ class RunReport:
     cache_candidates: int = 0
     cache_misses: int = 0
     invalid_ai_skipped: int = 0
+    content_safety_skipped: int = 0
+    body_unavailable_skipped: int = 0
+
+    @property
+    def degraded(self) -> bool:
+        return self.body_pending_count > 0 or self.ai_retry_count > 0
+
+    @property
+    def system_errors(self) -> list[str]:
+        return [
+            f"{result.source}: {message}"
+            for result in self.sources.values()
+            for message in result.errors
+        ]
 
     @property
     def partial(self) -> bool:
@@ -83,10 +103,9 @@ class RunReport:
             return self.write_failed > 0
         return any(
             (not result.coverage_complete)
-            or result.body_failed > 0
             or bool(result.errors)
             for result in self.sources.values()
-        ) or self.write_failed > 0 or self.update_failed > 0
+        ) or self.pending_articles > 0 or self.write_failed > 0 or self.update_failed > 0
 
     def to_dict(self) -> dict[str, Any]:
         source_data: dict[str, Any] = {}
@@ -105,6 +124,10 @@ class RunReport:
                 "event_duplicates": result.event_duplicates,
                 "invalid_ai_skipped": result.invalid_ai_skipped,
                 "invalid_ai_items": result.invalid_ai_items,
+                "content_safety_skipped": result.content_safety_skipped,
+                "content_safety_items": result.content_safety_items,
+                "body_unavailable_skipped": result.body_unavailable_skipped,
+                "body_unavailable_items": result.body_unavailable_items,
                 "coverage_complete": result.coverage_complete,
                 "errors": result.errors,
                 "warnings": result.warnings,
@@ -113,6 +136,8 @@ class RunReport:
             "target_date": self.target_date,
             "trigger_source": self.trigger_source,
             "partial": self.partial,
+            "degraded": self.degraded,
+            "system_errors": self.system_errors,
             "dry_run": self.dry_run,
             "collect_only": self.collect_only,
             "backfill": self.backfill,
@@ -134,6 +159,8 @@ class RunReport:
             "rate_limit_count": self.rate_limit_count,
             "retry_wait_seconds": round(self.retry_wait_seconds, 1),
             "pending_articles": self.pending_articles,
+            "body_pending_count": self.body_pending_count,
+            "ai_retry_count": self.ai_retry_count,
             "checkpoint_index": self.checkpoint_index,
             "summary_char_min": self.summary_char_min,
             "summary_char_max": self.summary_char_max,
@@ -141,4 +168,6 @@ class RunReport:
             "cache_candidates": self.cache_candidates,
             "cache_misses": self.cache_misses,
             "invalid_ai_skipped": self.invalid_ai_skipped,
+            "content_safety_skipped": self.content_safety_skipped,
+            "body_unavailable_skipped": self.body_unavailable_skipped,
         }

@@ -377,7 +377,7 @@ class FeishuBitable:
                 failed += len(batch)
         return updated, failed
 
-    def verify(self, articles: Iterable[Article]) -> set[str]:
+    def verify_urls(self, articles: Iterable[Article]) -> set[str]:
         urls, _ = self.record_index()
         missing: set[str] = set()
         for article in articles:
@@ -388,3 +388,6 @@ class FeishuBitable:
             if not record or status != article.record_status or (status == "已完成" and not content):
                 missing.add(normalize_url(article.url))
         return missing
+
+    def verify(self, articles: Iterable[Article]) -> set[str]:
+        return self.verify_urls(articles)

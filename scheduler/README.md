@@ -4,9 +4,9 @@
 
 ## 定时
 
-- `7 0 * * *`：北京时间 08:07
-- `37 0 * * *`：北京时间 08:37
-- `7 1 * * *`：北京时间 09:07
+- `7 0 * * *`：北京时间 08:07，同时检查网站资讯和公众号资讯
+- `37 0 * * *`：北京时间 08:37，同时恢复两条流水线的失败任务
+- `7 1 * * *`：北京时间 09:07，最后一次恢复检查
 
 ## Cloudflare Secrets
 
@@ -25,5 +25,5 @@ curl -fsS https://<worker-domain>/health
 curl -fsS -X POST https://<worker-domain>/trigger \
   -H "Authorization: Bearer <SCHEDULER_TEST_SECRET>" \
   -H "Content-Type: application/json" \
-  -d '{"target_date":"2026-08-12"}'
+  -d '{"pipeline":"wechat","target_date":"2026-08-13"}'
 ```

@@ -12,6 +12,13 @@ export class GitHubApiError extends Error {
 }
 
 export function previousShanghaiDate(now = new Date()) {
+  const current = shanghaiDate(now);
+  const previous = new Date(`${current}T00:00:00Z`);
+  previous.setUTCDate(previous.getUTCDate() - 1);
+  return previous.toISOString().slice(0, 10);
+}
+
+export function shanghaiDate(now = new Date()) {
   const parts = new Intl.DateTimeFormat("en-CA", {
     timeZone: SHANGHAI_TIME_ZONE,
     year: "numeric",
@@ -19,11 +26,7 @@ export function previousShanghaiDate(now = new Date()) {
     day: "2-digit",
   }).formatToParts(now);
   const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
-  const localMidnightUtc = new Date(
-    Date.UTC(Number(values.year), Number(values.month) - 1, Number(values.day)),
-  );
-  localMidnightUtc.setUTCDate(localMidnightUtc.getUTCDate() - 1);
-  return localMidnightUtc.toISOString().slice(0, 10);
+  return `${values.year}-${values.month}-${values.day}`;
 }
 
 export function validateTargetDate(value) {
@@ -41,12 +44,40 @@ function sleepDefault(milliseconds) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
-function githubConfig(env) {
+function taskSpec(env, task = { pipeline: "website", phase: "daily" }) {
+  const pipeline = task.pipeline || "website";
+  const phase = task.phase || "daily";
+  if (pipeline === "website") {
+    return {
+      pipeline,
+      phase: "daily",
+      workflow: env.GITHUB_WEBSITE_WORKFLOW || env.GITHUB_WORKFLOW || "personal_growth.yml",
+      triggerSource: "cloudflare",
+      titlePrefix: "个人成长网站版",
+      force: false,
+    };
+  }
+  if (pipeline !== "wechat" || phase !== "daily") {
+    throw new Error(`未知调度任务：${pipeline}/${phase}`);
+  }
+  return {
+    pipeline,
+    phase: "daily",
+    workflow: env.GITHUB_WECHAT_WORKFLOW || "wechat_growth.yml",
+    triggerSource: "cloudflare",
+    titlePrefix: "公众号每日资讯",
+    force: false,
+  };
+}
+
+function githubConfig(env, task) {
+  const spec = taskSpec(env, task);
   return {
     owner: env.GITHUB_OWNER || "Vickyyy-hub",
     repo: env.GITHUB_REPO || "-",
-    workflow: env.GITHUB_WORKFLOW || "personal_growth.yml",
+    workflow: spec.workflow,
     ref: env.GITHUB_REF || "main",
+    spec,
   };
 }
 
@@ -104,30 +135,31 @@ export async function requestWithRetry(url, init, options = {}) {
   throw new GitHubApiError(`GitHub API网络失败：${String(lastError)}`);
 }
 
-function workflowRunsUrl(env) {
-  const config = githubConfig(env);
+function workflowRunsUrl(env, task) {
+  const config = githubConfig(env, task);
   return `https://api.github.com/repos/${encodeURIComponent(config.owner)}/${encodeURIComponent(config.repo)}/actions/workflows/${encodeURIComponent(config.workflow)}/runs?event=workflow_dispatch&branch=${encodeURIComponent(config.ref)}&per_page=30`;
 }
 
-function workflowDispatchUrl(env) {
-  const config = githubConfig(env);
+function workflowDispatchUrl(env, task) {
+  const config = githubConfig(env, task);
   return `https://api.github.com/repos/${encodeURIComponent(config.owner)}/${encodeURIComponent(config.repo)}/actions/workflows/${encodeURIComponent(config.workflow)}/dispatches`;
 }
 
-function runTitle(targetDate) {
-  return `个人成长网站版 · ${targetDate} · cloudflare`;
+function runTitle(env, targetDate, task) {
+  const spec = taskSpec(env, task);
+  return `${spec.titlePrefix} · ${targetDate} · ${spec.triggerSource}`;
 }
 
-export function selectMatchingRun(runs, targetDate) {
-  const expectedTitle = runTitle(targetDate);
+export function selectMatchingRun(runs, targetDate, task, env = {}) {
+  const expectedTitle = runTitle(env, targetDate, task);
   return (runs || [])
     .filter((run) => run.display_title === expectedTitle)
     .sort((left, right) => String(right.created_at).localeCompare(String(left.created_at)))[0];
 }
 
-async function listWorkflowRuns(env, options) {
+async function listWorkflowRuns(env, task, options) {
   const response = await requestWithRetry(
-    workflowRunsUrl(env),
+    workflowRunsUrl(env, task),
     { method: "GET", headers: githubHeaders(env.GITHUB_TOKEN) },
     options,
   );
@@ -135,32 +167,36 @@ async function listWorkflowRuns(env, options) {
   return payload.workflow_runs || [];
 }
 
-async function dispatchWorkflow(env, targetDate, options) {
-  const config = githubConfig(env);
+async function dispatchWorkflow(env, targetDate, task, options) {
+  const config = githubConfig(env, task);
+  const inputs = {
+    target_date: targetDate,
+    sources: "all",
+    trigger_source: config.spec.triggerSource,
+  };
+  if (config.spec.force) {
+    inputs.force = "true";
+  }
   await requestWithRetry(
-    workflowDispatchUrl(env),
+    workflowDispatchUrl(env, task),
     {
       method: "POST",
       headers: githubHeaders(env.GITHUB_TOKEN),
       body: JSON.stringify({
         ref: config.ref,
-        inputs: {
-          target_date: targetDate,
-          sources: "all",
-          trigger_source: "cloudflare",
-        },
+        inputs,
       }),
     },
     options,
   );
 }
 
-async function waitForCreatedRun(env, targetDate, notBefore, options) {
+async function waitForCreatedRun(env, targetDate, task, notBefore, options) {
   const sleep = options.sleep || sleepDefault;
   const delays = options.verifyDelaysMs || DEFAULT_VERIFY_DELAYS_MS;
   for (const delay of delays) {
     await sleep(delay);
-    const run = selectMatchingRun(await listWorkflowRuns(env, options), targetDate);
+    const run = selectMatchingRun(await listWorkflowRuns(env, task, options), targetDate, task, env);
     if (run && new Date(run.created_at).getTime() >= notBefore - 2_000) {
       return run;
     }
@@ -191,7 +227,9 @@ export async function ensureWorkflowRun(env, targetDate, options = {}) {
     console.warn(JSON.stringify({ event: "github_token_expiry_warning", ...expiry }));
   }
 
-  const existing = selectMatchingRun(await listWorkflowRuns(env, options), targetDate);
+  const task = options.task || { pipeline: "website", phase: "daily" };
+  const spec = taskSpec(env, task);
+  const existing = selectMatchingRun(await listWorkflowRuns(env, task, options), targetDate, task, env);
   if (existing && existing.status !== "completed") {
     return { action: "skip_active", targetDate, run: existing, expiry };
   }
@@ -201,11 +239,13 @@ export async function ensureWorkflowRun(env, targetDate, options = {}) {
 
   for (let dispatchAttempt = 1; dispatchAttempt <= 2; dispatchAttempt += 1) {
     const dispatchedAt = Date.now();
-    await dispatchWorkflow(env, targetDate, options);
-    const created = await waitForCreatedRun(env, targetDate, dispatchedAt, options);
+    await dispatchWorkflow(env, targetDate, task, options);
+    const created = await waitForCreatedRun(env, targetDate, task, dispatchedAt, options);
     if (created) {
       return {
         action: existing ? "resume" : "dispatch",
+        pipeline: spec.pipeline,
+        phase: spec.phase,
         targetDate,
         dispatchAttempt,
         run: created,
@@ -214,6 +254,17 @@ export async function ensureWorkflowRun(env, targetDate, options = {}) {
     }
   }
   throw new Error(`GitHub已接收调度请求，但未查到 ${targetDate} 的新运行`);
+}
+
+export function jobsForCron(cron, now = new Date()) {
+  const previous = previousShanghaiDate(now);
+  if (["7 0 * * *", "37 0 * * *", "7 1 * * *"].includes(cron)) {
+    return [
+      { task: { pipeline: "website", phase: "daily" }, targetDate: previous },
+      { task: { pipeline: "wechat", phase: "daily" }, targetDate: previous },
+    ];
+  }
+  throw new Error(`未配置的Cron：${cron}`);
 }
 
 function jsonResponse(payload, status = 200) {
@@ -230,20 +281,24 @@ function bearerToken(request) {
 
 export default {
   async scheduled(controller, env, ctx) {
-    const targetDate = previousShanghaiDate(new Date(controller.scheduledTime));
+    const jobs = jobsForCron(controller.cron, new Date(controller.scheduledTime));
     ctx.waitUntil(
-      ensureWorkflowRun(env, targetDate)
-        .then((result) => console.log(JSON.stringify({ event: "scheduled_dispatch", ...result })))
-        .catch((error) => {
-          console.error(JSON.stringify({
-            event: "scheduled_dispatch_failed",
-            targetDate,
-            message: error.message,
-            status: error.status || null,
-            detail: error.detail || null,
-          }));
-          throw error;
-        }),
+      Promise.all(jobs.map(({ task, targetDate }) =>
+        ensureWorkflowRun(env, targetDate, { task })
+          .then((result) => console.log(JSON.stringify({ event: "scheduled_dispatch", ...result })))
+          .catch((error) => {
+            console.error(JSON.stringify({
+              event: "scheduled_dispatch_failed",
+              pipeline: task.pipeline,
+              phase: task.phase,
+              targetDate,
+              message: error.message,
+              status: error.status || null,
+              detail: error.detail || null,
+            }));
+            throw error;
+          }),
+      )),
     );
   },
 
@@ -260,10 +315,15 @@ export default {
     }
     try {
       const body = await request.json().catch(() => ({}));
+      const task = {
+        pipeline: body.pipeline || "website",
+        phase: body.phase || "daily",
+      };
+      const defaultDate = previousShanghaiDate(new Date());
       const targetDate = validateTargetDate(
-        body.target_date || previousShanghaiDate(new Date()),
+        body.target_date || defaultDate,
       );
-      const result = await ensureWorkflowRun(env, targetDate);
+      const result = await ensureWorkflowRun(env, targetDate, { task });
       return jsonResponse({ ok: true, ...result });
     } catch (error) {
       console.error(JSON.stringify({

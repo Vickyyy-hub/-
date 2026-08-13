@@ -4,9 +4,11 @@ import test from "node:test";
 import worker, {
   GitHubApiError,
   ensureWorkflowRun,
+  jobsForCron,
   previousShanghaiDate,
   requestWithRetry,
   selectMatchingRun,
+  shanghaiDate,
   tokenExpiryStatus,
   validateTargetDate,
 } from "../src/worker.mjs";
@@ -42,6 +44,11 @@ test("按上海时区计算前一自然日", () => {
   assert.equal(previousShanghaiDate(new Date("2026-01-01T16:01:00Z")), "2026-01-01");
 });
 
+test("按上海时区计算当前自然日", () => {
+  assert.equal(shanghaiDate(new Date("2026-08-13T12:30:00Z")), "2026-08-13");
+  assert.equal(shanghaiDate(new Date("2026-08-13T16:01:00Z")), "2026-08-14");
+});
+
 test("严格校验目标日期", () => {
   assert.equal(validateTargetDate("2026-08-12"), "2026-08-12");
   assert.throws(() => validateTargetDate("2026-02-30"), /无效/);
@@ -54,6 +61,25 @@ test("只匹配Cloudflare同日期运行", () => {
     { id: 2, display_title: "个人成长网站版 · 2026-08-12 · cloudflare", created_at: "2026-08-13T00:01:00Z" },
   ], "2026-08-12");
   assert.equal(match.id, 2);
+});
+
+test("公众号和网站任务不会误匹配", () => {
+  const runs = [
+    { id: 1, display_title: "个人成长网站版 · 2026-08-13 · cloudflare", created_at: "2026-08-14T00:07:00Z" },
+    { id: 2, display_title: "公众号每日资讯 · 2026-08-13 · cloudflare", created_at: "2026-08-14T00:07:00Z" },
+  ];
+  assert.equal(selectMatchingRun(runs, "2026-08-13", { pipeline: "wechat", phase: "daily" }).id, 2);
+  assert.equal(selectMatchingRun(runs, "2026-08-13").id, 1);
+});
+
+test("三个Cron都按上海前一日同时运行两条流水线", () => {
+  const morning = jobsForCron("37 0 * * *", new Date("2026-08-14T00:37:00Z"));
+  assert.deepEqual(morning, [
+    { task: { pipeline: "website", phase: "daily" }, targetDate: "2026-08-13" },
+    { task: { pipeline: "wechat", phase: "daily" }, targetDate: "2026-08-13" },
+  ]);
+  assert.deepEqual(jobsForCron("7 0 * * *", new Date("2026-08-14T00:07:00Z")), morning);
+  assert.deepEqual(jobsForCron("7 1 * * *", new Date("2026-08-14T01:07:00Z")), morning);
 });
 
 test("已成功日期不重复触发", async () => {
@@ -107,6 +133,38 @@ test("不存在运行时发起调度并确认新运行", async () => {
   const body = JSON.parse(dispatch.init.body);
   assert.deepEqual(body.inputs, {
     target_date: "2026-08-12",
+    sources: "all",
+    trigger_source: "cloudflare",
+  });
+});
+
+test("公众号任务使用独立工作流", async () => {
+  const requests = [];
+  const fetchImpl = async (url, init) => {
+    requests.push({ url, init });
+    if (init.method === "POST") {
+      return new Response(null, { status: 204 });
+    }
+    const created = requests.some((request) => request.init.method === "POST");
+    return jsonResponse({ workflow_runs: created ? [{
+      id: 30,
+      display_title: "公众号每日资讯 · 2026-08-13 · cloudflare",
+      status: "queued",
+      conclusion: null,
+      created_at: new Date().toISOString(),
+    }] : [] });
+  };
+  const options = {
+    ...noWaitOptions(fetchImpl),
+    task: { pipeline: "wechat", phase: "daily" },
+  };
+  const result = await ensureWorkflowRun(env, "2026-08-13", options);
+  assert.equal(result.pipeline, "wechat");
+  assert.equal(result.phase, "daily");
+  const dispatch = requests.find((request) => request.init.method === "POST");
+  assert.match(dispatch.url, /wechat_growth\.yml\/dispatches$/);
+  assert.deepEqual(JSON.parse(dispatch.init.body).inputs, {
+    target_date: "2026-08-13",
     sources: "all",
     trigger_source: "cloudflare",
   });
