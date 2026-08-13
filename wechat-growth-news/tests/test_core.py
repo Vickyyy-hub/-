@@ -78,7 +78,36 @@ def test_wewe_discovery_uses_date_modified_and_crosses_boundary(monkeypatch):
     assert result.scanned == 2
     assert result.discovered == 1
     assert result.coverage_complete is True
+    assert result.latest_published_at == parse_datetime("2026-08-12T03:00:00.000Z")
     assert result.articles[0].meta["feed_position"] == 0
+
+
+def test_all_stale_wewe_feeds_are_a_system_failure():
+    latest = parse_datetime("2026-08-12T11:31:28.000Z")
+    results = {
+        key: SourceResult(name, latest_published_at=latest, scanned=20, coverage_complete=True)
+        for key, name in {
+            "simple_psychology": "简单心理",
+            "dxy": "丁香医生",
+            "earth_knowledge": "地球知识局",
+            "gelong": "格隆",
+            "leviathan": "利维坦",
+        }.items()
+    }
+    Pipeline._mark_globally_stale(results, date(2026, 8, 13))
+    report = RunReport("2026-08-13", sources=results)
+    assert report.partial is True
+    assert "可能账号失效或上游未刷新" in report.system_errors[0]
+
+
+def test_one_current_wewe_feed_prevents_global_stale_alarm():
+    old = parse_datetime("2026-08-12T11:31:28.000Z")
+    results = {
+        "simple_psychology": SourceResult("简单心理", latest_published_at=old, scanned=20, coverage_complete=True),
+        "dxy": SourceResult("丁香医生", latest_published_at=old, scanned=20, discovered=1, coverage_complete=True),
+    }
+    Pipeline._mark_globally_stale(results, date(2026, 8, 13))
+    assert all(not result.errors for result in results.values())
 
 
 def test_wewe_fulltext_is_cleaned_and_empty_is_failure(monkeypatch):

@@ -53,6 +53,8 @@ class WeweRssAdapter(SourceAdapter):
             except (TypeError, ValueError) as exc:
                 result.errors.append(f"发布时间格式错误：{raw_time} ({exc})")
                 continue
+            if result.latest_published_at is None or published > result.latest_published_at:
+                result.latest_published_at = published
             oldest = published if oldest is None else min(oldest, published)
             if not self._in_target(published, day):
                 continue

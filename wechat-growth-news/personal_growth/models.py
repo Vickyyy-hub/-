@@ -25,6 +25,7 @@ class Article:
 @dataclass
 class SourceResult:
     source: str
+    latest_published_at: datetime | None = None
     scanned: int = 0
     discovered: int = 0
     body_success: int = 0
@@ -111,6 +112,7 @@ class RunReport:
         source_data: dict[str, Any] = {}
         for name, result in self.sources.items():
             source_data[name] = {
+                "latest_published_at": result.latest_published_at.isoformat() if result.latest_published_at else None,
                 "scanned": result.scanned,
                 "discovered": result.discovered,
                 "body_success": result.body_success,

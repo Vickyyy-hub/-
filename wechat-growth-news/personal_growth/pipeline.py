@@ -50,7 +50,34 @@ class Pipeline:
                     f"[{result.source}] 扫描{result.scanned}，目标日{result.discovered}，"
                     f"覆盖完整={result.coverage_complete}，错误{len(result.errors)}"
                 )
+        self._mark_globally_stale(results, day)
         return results
+
+    @staticmethod
+    def _mark_globally_stale(results: dict[str, SourceResult], day: date) -> None:
+        """Fail loudly when every healthy feed is older than the target day.
+
+        Five independent publishers returning no target-day items while every
+        feed stops on an earlier day is the observable signal for an expired
+        WeRead login or a stalled WeWeRSS refresh.  A single current feed is
+        enough to avoid the global alarm.
+        """
+        if not results or any(result.errors or result.scanned == 0 for result in results.values()):
+            return
+        if any(result.discovered > 0 for result in results.values()):
+            return
+        latest_values = [result.latest_published_at for result in results.values()]
+        if any(value is None for value in latest_values):
+            return
+        latest = max(value for value in latest_values if value is not None)
+        if latest.date() >= day:
+            return
+        first_key = sorted(results)[0]
+        results[first_key].errors.append(
+            "WeWeRSS全部来源未发现目标日文章，"
+            f"最新文章停留在{latest.isoformat()}；可能账号失效或上游未刷新，"
+            "请检查微信读书账号并重新扫码"
+        )
 
     @staticmethod
     def _dedupe(articles: Iterable[Article]) -> list[Article]:
