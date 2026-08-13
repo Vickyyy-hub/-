@@ -38,6 +38,10 @@ class SourceResult:
     event_duplicates: int = 0
     invalid_ai_skipped: int = 0
     invalid_ai_items: list[dict[str, str]] = field(default_factory=list)
+    content_safety_skipped: int = 0
+    content_safety_items: list[dict[str, str]] = field(default_factory=list)
+    body_unavailable_skipped: int = 0
+    body_unavailable_items: list[dict[str, str]] = field(default_factory=list)
     coverage_complete: bool = False
     articles: list[Article] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
@@ -76,6 +80,8 @@ class RunReport:
     cache_candidates: int = 0
     cache_misses: int = 0
     invalid_ai_skipped: int = 0
+    content_safety_skipped: int = 0
+    body_unavailable_skipped: int = 0
 
     @property
     def partial(self) -> bool:
@@ -105,6 +111,10 @@ class RunReport:
                 "event_duplicates": result.event_duplicates,
                 "invalid_ai_skipped": result.invalid_ai_skipped,
                 "invalid_ai_items": result.invalid_ai_items,
+                "content_safety_skipped": result.content_safety_skipped,
+                "content_safety_items": result.content_safety_items,
+                "body_unavailable_skipped": result.body_unavailable_skipped,
+                "body_unavailable_items": result.body_unavailable_items,
                 "coverage_complete": result.coverage_complete,
                 "errors": result.errors,
                 "warnings": result.warnings,
@@ -141,4 +151,6 @@ class RunReport:
             "cache_candidates": self.cache_candidates,
             "cache_misses": self.cache_misses,
             "invalid_ai_skipped": self.invalid_ai_skipped,
+            "content_safety_skipped": self.content_safety_skipped,
+            "body_unavailable_skipped": self.body_unavailable_skipped,
         }

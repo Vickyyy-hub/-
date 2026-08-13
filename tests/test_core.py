@@ -13,6 +13,7 @@ from personal_growth.ai import (
     SUMMARY_VERSION,
     ArkAPIError,
     ArkAnalyzer,
+    ArkContentSafetyError,
     ArkRateLimitError,
 )
 from personal_growth.evidence import effective_chars, evidence_packets
@@ -151,6 +152,131 @@ def test_invalid_ai_article_does_not_interrupt_following_articles(monkeypatch, t
     assert report.invalid_ai_skipped == 1
     assert report.sources["huxiu"].invalid_ai_skipped == 1
     assert report.sources["huxiu"].invalid_ai_items[0]["url"] == "https://example.com/bad"
+
+
+def test_content_safety_article_is_cached_and_does_not_interrupt(monkeypatch, tmp_path):
+    monkeypatch.setenv("STATE_DB", str(tmp_path / "state.sqlite"))
+    articles = [
+        Article("虎嗅", "敏感文章", "https://example.com/sensitive", from_epoch(1786195965), body="正文" * 500),
+        Article("虎嗅", "正常文章", "https://example.com/normal", from_epoch(1786195964), body="正文" * 500),
+    ]
+    created = []
+
+    class FakeAnalyzer:
+        model = "test-model"
+
+        def __init__(self):
+            self.filter_calls = 0
+            self.summary_calls = 0
+            self.cache_hits = 0
+            self.rate_limit_count = 0
+            self.retry_wait_seconds = 0.0
+            self.calls = []
+            created.append(self)
+
+        def analyze(self, article, filter_evidence, summary_evidence, cache_key, state):
+            self.calls.append(article.title)
+            if article.title == "敏感文章":
+                raise ArkContentSafetyError("InputTextSensitiveContentDetected", "filter")
+            result = {
+                "status": "淘汰", "valuable": False, "reason": "信息增量不足",
+                "event_key": article.title, "topics": [], "category": "", "unique_points": [],
+                "scores": {"importance": 1, "information_gain": 1, "social_impact": 1,
+                           "actionability": 1, "evidence_density": 1},
+                "score_total": 5,
+            }
+            state.put_stage(cache_key, FILTER_STAGE, f"{self.model}:{FILTER_VERSION}", result)
+            return result
+
+    monkeypatch.setattr("personal_growth.pipeline.ArkAnalyzer", FakeAnalyzer)
+    pipeline = object.__new__(Pipeline)
+    pipeline.deadline = time.monotonic() + 60
+
+    first = RunReport(
+        "2026-08-12",
+        sources={"huxiu": SourceResult("虎嗅", coverage_complete=True)},
+    )
+    analyzed, complete = pipeline.analyze(articles, first, job_id="safety-continues")
+    assert complete is True
+    assert analyzed == []
+    assert created[0].calls == ["敏感文章", "正常文章"]
+    assert first.content_safety_skipped == 1
+    assert first.sources["huxiu"].content_safety_skipped == 1
+    assert first.sources["huxiu"].errors == []
+    assert first.partial is False
+
+    second = RunReport(
+        "2026-08-12",
+        sources={"huxiu": SourceResult("虎嗅", coverage_complete=True)},
+    )
+    analyzed, complete = pipeline.analyze(articles, second, job_id="safety-continues")
+    assert complete is True
+    assert analyzed == []
+    assert created[1].calls == []
+    assert second.cache_hits == 2
+
+
+def test_empty_body_is_single_article_warning_not_partial(monkeypatch):
+    empty = Article("虎嗅", "空正文", "https://example.com/empty", from_epoch(1786195964))
+    normal = Article("虎嗅", "正常正文", "https://example.com/normal", from_epoch(1786195963))
+    source = SourceResult("虎嗅", articles=[empty, normal], coverage_complete=True)
+
+    class EmptyAdapter:
+        @staticmethod
+        def fetch_body(article):
+            return "" if article.title == "空正文" else "有效正文" * 100
+
+    pipeline = object.__new__(Pipeline)
+    pipeline.adapters = {"huxiu": EmptyAdapter()}
+    completed = pipeline.fetch_bodies({"huxiu": source})
+    report = RunReport("2026-08-12", sources={"huxiu": source})
+    assert completed == [normal]
+    assert source.body_failed == 0
+    assert source.body_unavailable_skipped == 1
+    assert source.body_unavailable_items[0]["url"] == empty.url
+    assert source.errors == []
+    assert report.partial is False
+
+
+def test_all_bodies_unavailable_is_still_systemic_source_failure():
+    articles = [
+        Article("虎嗅", f"空正文{i}", f"https://example.com/empty/{i}", from_epoch(1786195964 + i))
+        for i in range(2)
+    ]
+    source = SourceResult("虎嗅", articles=articles, coverage_complete=True)
+
+    class EmptyAdapter:
+        @staticmethod
+        def fetch_body(article):
+            return ""
+
+    pipeline = object.__new__(Pipeline)
+    pipeline.adapters = {"huxiu": EmptyAdapter()}
+    assert pipeline.fetch_bodies({"huxiu": source}) == []
+    report = RunReport("2026-08-12", sources={"huxiu": source})
+    assert source.body_unavailable_skipped == 2
+    assert source.errors == ["站点正文整体不可用：2篇均读取失败"]
+    assert report.partial is True
+
+
+def test_content_safety_http_400_has_distinct_error(monkeypatch):
+    monkeypatch.setenv("ARK_API_KEY", "test")
+    monkeypatch.setenv("ARK_MIN_INTERVAL_SECONDS", "0")
+    analyzer = ArkAnalyzer()
+
+    class Response:
+        status_code = 400
+        text = '{"error":{"code":"InputTextSensitiveContentDetected"}}'
+        headers = {}
+
+    monkeypatch.setattr(analyzer.session, "post", lambda *args, **kwargs: Response())
+    try:
+        analyzer._request("system", "user", 20, "filter")
+    except ArkContentSafetyError as exc:
+        assert "InputTextSensitiveContentDetected" in exc.detail
+        assert exc.stage == "filter"
+    else:
+        raise AssertionError("单篇内容安全拒绝必须使用可跳过的独立错误")
 
 
 def _ai(score: int, unique: str) -> dict:
@@ -361,6 +487,34 @@ def test_report_exposes_per_source_ai_progress():
     assert source["ai_processed"] == 3
     assert source["ai_pending"] == 2
     assert source["cache_hits"] == 4
+
+
+def test_report_exposes_all_single_article_skip_counters():
+    report = RunReport(
+        "2026-08-12",
+        content_safety_skipped=1,
+        body_unavailable_skipped=2,
+        invalid_ai_skipped=3,
+        summary_rejected=4,
+    )
+    report.sources = {
+        "huxiu": SourceResult(
+            "虎嗅",
+            coverage_complete=True,
+            content_safety_skipped=1,
+            content_safety_items=[{"title": "敏感", "url": "u1", "error": "安全限制"}],
+            body_unavailable_skipped=2,
+            body_unavailable_items=[{"title": "空", "url": "u2", "error": "正文为空"}],
+        )
+    }
+    payload = report.to_dict()
+    assert payload["content_safety_skipped"] == 1
+    assert payload["body_unavailable_skipped"] == 2
+    assert payload["invalid_ai_skipped"] == 3
+    assert payload["summary_rejected"] == 4
+    assert payload["sources"]["huxiu"]["content_safety_items"][0]["url"] == "u1"
+    assert payload["sources"]["huxiu"]["body_unavailable_items"][0]["url"] == "u2"
+    assert report.partial is False
 
 
 def test_cached_only_report_ignores_expected_source_gaps():

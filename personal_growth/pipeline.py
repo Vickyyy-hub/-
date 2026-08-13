@@ -17,6 +17,7 @@ from .ai import (
     SUMMARY_VERSION,
     ArkAPIError,
     ArkAnalyzer,
+    ArkContentSafetyError,
     ArkRateLimitError,
 )
 from .evidence import content_hash, effective_chars, evidence_packets
@@ -94,12 +95,20 @@ class Pipeline:
                 if excluded:
                     result.excluded += 1
                 elif error:
-                    result.body_failed += 1
-                    result.errors.append(f"正文失败 {article.url}: {error}")
+                    result.body_unavailable_skipped += 1
+                    result.body_unavailable_items.append(
+                        {"title": article.title, "url": article.url, "error": error}
+                    )
+                    result.warnings.append(f"正文不可用跳过 {article.url}: {error}")
                 else:
                     article.body = body
                     result.body_success += 1
                     completed.append(article)
+        for result in results.values():
+            if result.body_unavailable_skipped > 0 and result.body_success == 0:
+                result.errors.append(
+                    f"站点正文整体不可用：{result.body_unavailable_skipped}篇均读取失败"
+                )
         return completed
 
     @staticmethod
@@ -288,6 +297,32 @@ class Pipeline:
                             cache_key,
                             state,
                         )
+                except ArkContentSafetyError as exc:
+                    result = {
+                        "status": "淘汰",
+                        "valuable": False,
+                        "reason": "内容安全限制跳过",
+                        "event_key": article.title,
+                        "topics": [],
+                        "category": "",
+                        "unique_points": [],
+                        "scores": {
+                            "importance": 0,
+                            "information_gain": 0,
+                            "social_impact": 0,
+                            "actionability": 0,
+                            "evidence_density": 0,
+                        },
+                        "score_total": 0,
+                        "content_safety": True,
+                        "content_safety_error": clean_text(exc.detail)[:500],
+                    }
+                    state.put_stage(
+                        cache_key,
+                        FILTER_STAGE,
+                        f"{analyzer.model}:{FILTER_VERSION}",
+                        result,
+                    )
                 except (ArkRateLimitError, ArkAPIError) as exc:
                     source_result.errors.append(f"AI失败 {article.url}: {exc}")
                     state.save_progress(job_id, manifest, index, article.url, "waiting_retry")
@@ -307,6 +342,17 @@ class Pipeline:
                 source_result.ai_pending -= 1
                 source_result.cache_hits += analyzer.cache_hits - cache_before
                 article.ai_result = result
+                if result.get("content_safety"):
+                    source_result.content_safety_skipped += 1
+                    report.content_safety_skipped += 1
+                    source_result.content_safety_items.append(
+                        {
+                            "title": article.title,
+                            "url": article.url,
+                            "error": str(result.get("content_safety_error", "内容安全限制")),
+                        }
+                    )
+                    source_result.warnings.append(f"内容安全限制跳过 {article.url}")
                 if result.get("invalid_ai"):
                     source_result.invalid_ai_skipped += 1
                     report.invalid_ai_skipped += 1
@@ -400,6 +446,9 @@ class Pipeline:
             for article in source_result.articles:
                 article.daily_date = day
         articles = self._pre_dedupe(self.fetch_bodies(report.sources))
+        report.body_unavailable_skipped = sum(
+            result.body_unavailable_skipped for result in report.sources.values()
+        )
         existing_urls, existing_titles = feishu.existing_keys()
         unseen_articles = [
             article for article in articles
@@ -481,6 +530,9 @@ class Pipeline:
             assert feishu is not None
             _, report.unchanged = self._prepare_backfill(report.sources, feishu)
         articles = self._pre_dedupe(self.fetch_bodies(report.sources))
+        report.body_unavailable_skipped = sum(
+            result.body_unavailable_skipped for result in report.sources.values()
+        )
         if max_articles > 0:
             articles = self._sample_articles(articles, max_articles)
         if not collect_only:

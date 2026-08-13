@@ -36,6 +36,15 @@ class ArkAPIError(RuntimeError):
     pass
 
 
+class ArkContentSafetyError(ArkAPIError):
+    """A single article was rejected by the model safety filter."""
+
+    def __init__(self, detail: str, stage: str) -> None:
+        super().__init__(detail)
+        self.detail = detail
+        self.stage = stage
+
+
 class ArkAnalyzer:
     def __init__(self) -> None:
         self.api_key = os.environ.get("ARK_API_KEY", "")
@@ -123,6 +132,8 @@ class ArkAnalyzer:
                 self.retry_wait_seconds += wait
                 time.sleep(wait)
                 continue
+            if response.status_code == 400 and "InputTextSensitiveContentDetected" in detail:
+                raise ArkContentSafetyError(detail, stage)
             if response.status_code in {400, 401, 403}:
                 raise ArkAPIError(f"豆包不可重试错误 HTTP {response.status_code}：{detail}")
             if response.status_code >= 500:
