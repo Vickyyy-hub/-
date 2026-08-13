@@ -1,0 +1,17 @@
+name = "personal-growth-scheduler"
+main = "src/worker.mjs"
+compatibility_date = "2026-08-13"
+workers_dev = true
+
+[observability]
+enabled = true
+head_sampling_rate = 1
+
+[triggers]
+crons = ["7 0 * * *", "37 0 * * *", "7 1 * * *"]
+
+[vars]
+GITHUB_OWNER = "Vickyyy-hub"
+GITHUB_REPO = "-"
+GITHUB_WORKFLOW = "personal_growth.yml"
+GITHUB_REF = "main"
