@@ -53,7 +53,6 @@ class Config:
                 "STATE_PATH",
                 "LOCK_PATH",
                 "CLOUDFLARE_RECOVERY_URL",
-                "WEWE_RECOVERY_SECRET",
             )
         }
         missing = [key for key, value in required.items() if not value]
@@ -64,13 +63,19 @@ class Config:
             for item in os.environ.get("EXPECTED_FEED_IDS", "").split(",")
             if item.strip()
         )
+        recovery_secret = os.environ.get("WEWE_RECOVERY_SECRET", "").strip()
+        secret_file = os.environ.get("WEWE_RECOVERY_SECRET_FILE", "").strip()
+        if not recovery_secret and secret_file:
+            recovery_secret = Path(secret_file).read_text(encoding="utf-8").strip()
+        if not recovery_secret:
+            raise RecoveryError("缺少配置：WEWE_RECOVERY_SECRET 或 WEWE_RECOVERY_SECRET_FILE")
         return cls(
             database_path=Path(required["DATABASE_PATH"]),
             wewe_env_path=Path(required["WEWE_ENV_PATH"]),
             state_path=Path(required["STATE_PATH"]),
             lock_path=Path(required["LOCK_PATH"]),
             recovery_url=required["CLOUDFLARE_RECOVERY_URL"],
-            recovery_secret=required["WEWE_RECOVERY_SECRET"],
+            recovery_secret=recovery_secret,
             wewe_base_url=os.environ.get("WEWE_BASE_URL", "http://127.0.0.1:14000").rstrip("/"),
             expected_feed_ids=feed_ids,
             max_recovery_days=int(os.environ.get("MAX_RECOVERY_DAYS", "7")),
