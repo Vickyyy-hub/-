@@ -57,6 +57,17 @@ function taskSpec(env, task = { pipeline: "website", phase: "daily" }) {
       force: false,
     };
   }
+  if (pipeline === "wechat" && phase === "login_recovery") {
+    const eventId = validateEventId(task.eventId);
+    return {
+      pipeline,
+      phase,
+      workflow: env.GITHUB_WECHAT_WORKFLOW || "wechat_growth.yml",
+      triggerSource: `wewe-login-${eventId}`,
+      titlePrefix: "公众号每日资讯",
+      force: true,
+    };
+  }
   if (pipeline !== "wechat" || phase !== "daily") {
     throw new Error(`未知调度任务：${pipeline}/${phase}`);
   }
@@ -68,6 +79,36 @@ function taskSpec(env, task = { pipeline: "website", phase: "daily" }) {
     titlePrefix: "公众号每日资讯",
     force: false,
   };
+}
+
+export function validateEventId(value) {
+  if (typeof value !== "string" || !/^[A-Za-z0-9_-]{8,80}$/.test(value)) {
+    throw new Error("登录事件ID无效");
+  }
+  return value;
+}
+
+function utcDateOffset(value, days) {
+  const parsed = new Date(`${value}T00:00:00Z`);
+  parsed.setUTCDate(parsed.getUTCDate() + days);
+  return parsed.toISOString().slice(0, 10);
+}
+
+export function validateRecoveryRequest(body, now = new Date()) {
+  const eventId = validateEventId(body?.event_id);
+  if (!Array.isArray(body?.target_dates) || body.target_dates.length < 1 || body.target_dates.length > 7) {
+    throw new Error("补抓日期必须为1至7个");
+  }
+  const dates = [...new Set(body.target_dates.map(validateTargetDate))];
+  if (dates.length !== body.target_dates.length) {
+    throw new Error("补抓日期不能重复");
+  }
+  const today = shanghaiDate(now);
+  const earliest = utcDateOffset(today, -6);
+  if (dates.some((value) => value < earliest || value > today)) {
+    throw new Error(`补抓日期只能位于 ${earliest} 至 ${today}`);
+  }
+  return { eventId, targetDates: dates.sort() };
 }
 
 function githubConfig(env, task) {
@@ -306,6 +347,40 @@ export default {
     const url = new URL(request.url);
     if (request.method === "GET" && url.pathname === "/health") {
       return jsonResponse({ ok: true, service: "personal-growth-scheduler" });
+    }
+    if (request.method === "POST" && url.pathname === "/wewe-recovered") {
+      if (!env.WEWE_RECOVERY_SECRET || bearerToken(request) !== env.WEWE_RECOVERY_SECRET) {
+        return jsonResponse({ error: "unauthorized" }, 401);
+      }
+      try {
+        const recovery = validateRecoveryRequest(
+          await request.json().catch(() => ({})),
+          new Date(),
+        );
+        const task = {
+          pipeline: "wechat",
+          phase: "login_recovery",
+          eventId: recovery.eventId,
+        };
+        const jobs = [];
+        for (const targetDate of recovery.targetDates) {
+          jobs.push(await ensureWorkflowRun(env, targetDate, { task }));
+        }
+        return jsonResponse({
+          ok: true,
+          event_id: recovery.eventId,
+          target_dates: recovery.targetDates,
+          jobs,
+        });
+      } catch (error) {
+        console.error(JSON.stringify({
+          event: "wewe_recovery_dispatch_failed",
+          message: error.message,
+          status: error.status || null,
+        }));
+        const status = error instanceof GitHubApiError ? 502 : 400;
+        return jsonResponse({ ok: false, error: error.message }, status);
+      }
     }
     if (request.method !== "POST" || url.pathname !== "/trigger") {
       return jsonResponse({ error: "not_found" }, 404);

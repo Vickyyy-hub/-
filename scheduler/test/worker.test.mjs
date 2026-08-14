@@ -10,6 +10,8 @@ import worker, {
   selectMatchingRun,
   shanghaiDate,
   tokenExpiryStatus,
+  validateEventId,
+  validateRecoveryRequest,
   validateTargetDate,
 } from "../src/worker.mjs";
 
@@ -39,6 +41,11 @@ const env = {
   GITHUB_REF: "main",
 };
 
+const recoveryEnv = {
+  ...env,
+  WEWE_RECOVERY_SECRET: "recovery-secret",
+};
+
 test("按上海时区计算前一自然日", () => {
   assert.equal(previousShanghaiDate(new Date("2026-08-13T00:07:00Z")), "2026-08-12");
   assert.equal(previousShanghaiDate(new Date("2026-01-01T16:01:00Z")), "2026-01-01");
@@ -53,6 +60,27 @@ test("严格校验目标日期", () => {
   assert.equal(validateTargetDate("2026-08-12"), "2026-08-12");
   assert.throws(() => validateTargetDate("2026-02-30"), /无效/);
   assert.throws(() => validateTargetDate("08-12-2026"), /YYYY-MM-DD/);
+});
+
+test("恢复请求只接受最近7天且事件ID安全", () => {
+  const now = new Date("2026-08-14T03:00:00Z");
+  assert.equal(validateEventId("login-20260814-abcd1234"), "login-20260814-abcd1234");
+  assert.deepEqual(validateRecoveryRequest({
+    event_id: "login-20260814-abcd1234",
+    target_dates: ["2026-08-13", "2026-08-14"],
+  }, now), {
+    eventId: "login-20260814-abcd1234",
+    targetDates: ["2026-08-13", "2026-08-14"],
+  });
+  assert.throws(() => validateEventId("bad event"), /无效/);
+  assert.throws(() => validateRecoveryRequest({
+    event_id: "login-20260814-abcd1234",
+    target_dates: ["2026-08-07"],
+  }, now), /只能位于/);
+  assert.throws(() => validateRecoveryRequest({
+    event_id: "login-20260814-abcd1234",
+    target_dates: ["2026-08-14", "2026-08-14"],
+  }, now), /不能重复/);
 });
 
 test("只匹配Cloudflare同日期运行", () => {
@@ -170,6 +198,57 @@ test("公众号任务使用独立工作流", async () => {
   });
 });
 
+test("扫码恢复使用事件ID强制触发且与晨间运行隔离", async () => {
+  const requests = [];
+  const task = { pipeline: "wechat", phase: "login_recovery", eventId: "login-20260814-abcd1234" };
+  const fetchImpl = async (_url, init) => {
+    requests.push(init);
+    if (init.method === "POST") return new Response(null, { status: 204 });
+    const created = requests.some((item) => item.method === "POST");
+    return jsonResponse({ workflow_runs: created ? [{
+      id: 31,
+      display_title: "公众号每日资讯 · 2026-08-14 · wewe-login-login-20260814-abcd1234",
+      status: "queued",
+      conclusion: null,
+      created_at: new Date().toISOString(),
+    }] : [{
+      id: 30,
+      display_title: "公众号每日资讯 · 2026-08-14 · cloudflare",
+      status: "completed",
+      conclusion: "success",
+      created_at: new Date().toISOString(),
+    }] });
+  };
+  const result = await ensureWorkflowRun(env, "2026-08-14", {
+    ...noWaitOptions(fetchImpl),
+    task,
+  });
+  assert.equal(result.action, "dispatch");
+  const body = JSON.parse(requests.find((item) => item.method === "POST").body);
+  assert.deepEqual(body.inputs, {
+    target_date: "2026-08-14",
+    sources: "all",
+    trigger_source: "wewe-login-login-20260814-abcd1234",
+    force: "true",
+  });
+});
+
+test("同一扫码事件和日期不会重复触发", async () => {
+  const task = { pipeline: "wechat", phase: "login_recovery", eventId: "login-20260814-abcd1234" };
+  const fetchImpl = async () => jsonResponse({ workflow_runs: [{
+    id: 32,
+    display_title: "公众号每日资讯 · 2026-08-14 · wewe-login-login-20260814-abcd1234",
+    status: "completed",
+    conclusion: "success",
+    created_at: new Date().toISOString(),
+  }] });
+  const result = await ensureWorkflowRun(env, "2026-08-14", {
+    ...noWaitOptions(fetchImpl),
+    task,
+  });
+  assert.equal(result.action, "skip_success");
+});
+
 test("失败运行会触发断点恢复", async () => {
   let postCount = 0;
   let listCount = 0;
@@ -236,4 +315,23 @@ test("手动入口必须使用保护密钥", async () => {
   const health = await worker.fetch(new Request("https://scheduler.test/health"), protectedEnv);
   assert.equal(health.status, 200);
   assert.deepEqual(await health.json(), { ok: true, service: "personal-growth-scheduler" });
+});
+
+test("扫码恢复入口独立鉴权并限制任务类型", async () => {
+  const unauthorized = await worker.fetch(new Request("https://scheduler.test/wewe-recovered", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ event_id: "login-20260814-abcd1234", target_dates: ["2026-08-14"] }),
+  }), recoveryEnv);
+  assert.equal(unauthorized.status, 401);
+
+  const malformed = await worker.fetch(new Request("https://scheduler.test/wewe-recovered", {
+    method: "POST",
+    headers: {
+      Authorization: "Bearer recovery-secret",
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ pipeline: "website", event_id: "bad", target_dates: [] }),
+  }), recoveryEnv);
+  assert.equal(malformed.status, 400);
 });
