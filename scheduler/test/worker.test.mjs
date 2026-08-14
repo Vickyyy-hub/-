@@ -3,9 +3,11 @@ import test from "node:test";
 
 import worker, {
   GitHubApiError,
+  ensureOldestMissingWorkflowRun,
   ensureWorkflowRun,
   jobsForCron,
   previousShanghaiDate,
+  recentPreviousShanghaiDates,
   requestWithRetry,
   selectMatchingRun,
   shanghaiDate,
@@ -49,6 +51,13 @@ const recoveryEnv = {
 test("按上海时区计算前一自然日", () => {
   assert.equal(previousShanghaiDate(new Date("2026-08-13T00:07:00Z")), "2026-08-12");
   assert.equal(previousShanghaiDate(new Date("2026-01-01T16:01:00Z")), "2026-01-01");
+});
+
+test("按上海时区生成最近7个已结束自然日", () => {
+  assert.deepEqual(recentPreviousShanghaiDates(new Date("2026-08-15T04:07:00Z")), [
+    "2026-08-08", "2026-08-09", "2026-08-10", "2026-08-11",
+    "2026-08-12", "2026-08-13", "2026-08-14",
+  ]);
 });
 
 test("按上海时区计算当前自然日", () => {
@@ -108,6 +117,85 @@ test("三个Cron都按上海前一日同时运行两条流水线", () => {
   ]);
   assert.deepEqual(jobsForCron("7 0 * * *", new Date("2026-08-14T00:07:00Z")), morning);
   assert.deepEqual(jobsForCron("7 1 * * *", new Date("2026-08-14T01:07:00Z")), morning);
+  assert.deepEqual(jobsForCron("7 4 * * *", new Date("2026-08-14T04:07:00Z")), [{
+    task: { pipeline: "website", phase: "daily" },
+    recoveryLookbackDays: 7,
+    scheduledAt: new Date("2026-08-14T04:07:00Z"),
+  }]);
+});
+
+test("午间追补在网站任务运行时不创建新任务", async () => {
+  let postCount = 0;
+  const fetchImpl = async (_url, init) => {
+    if (init.method === "POST") postCount += 1;
+    return jsonResponse({ workflow_runs: [{
+      id: 40,
+      display_title: "个人成长网站版 · 2026-08-14 · manual",
+      status: "in_progress",
+      conclusion: null,
+      created_at: "2026-08-15T03:00:00Z",
+    }] });
+  };
+  const result = await ensureOldestMissingWorkflowRun(
+    env,
+    new Date("2026-08-15T04:07:00Z"),
+    noWaitOptions(fetchImpl),
+  );
+  assert.equal(result.action, "skip_active_global");
+  assert.equal(postCount, 0);
+});
+
+test("午间追补选择最近7天中最早未成功日期", async () => {
+  let postCount = 0;
+  const dates = recentPreviousShanghaiDates(new Date("2026-08-15T04:07:00Z"));
+  const initialRuns = dates
+    .filter((date) => date !== "2026-08-10")
+    .map((date, index) => ({
+      id: 50 + index,
+      display_title: `个人成长网站版 · ${date} · cloudflare`,
+      status: "completed",
+      conclusion: "success",
+      created_at: `2026-08-${String(index + 8).padStart(2, "0")}T04:00:00Z`,
+    }));
+  const fetchImpl = async (url, init) => {
+    if (init.method === "POST") {
+      postCount += 1;
+      return new Response(null, { status: 204 });
+    }
+    if (postCount && url.includes("event=workflow_dispatch")) {
+      return jsonResponse({ workflow_runs: [{
+        id: 80,
+        display_title: "个人成长网站版 · 2026-08-10 · cloudflare",
+        status: "queued",
+        conclusion: null,
+        created_at: new Date().toISOString(),
+      }] });
+    }
+    return jsonResponse({ workflow_runs: initialRuns });
+  };
+  const result = await ensureOldestMissingWorkflowRun(
+    env,
+    new Date("2026-08-15T04:07:00Z"),
+    noWaitOptions(fetchImpl),
+  );
+  assert.equal(result.action, "dispatch");
+  assert.equal(result.targetDate, "2026-08-10");
+  assert.equal(postCount, 1);
+});
+
+test("午间追补在最近7天全部成功时跳过", async () => {
+  const runs = recentPreviousShanghaiDates(new Date("2026-08-15T04:07:00Z")).map((date) => ({
+    display_title: `个人成长网站版 · ${date} · cloudflare`,
+    status: "completed",
+    conclusion: "success",
+    created_at: "2026-08-15T03:00:00Z",
+  }));
+  const result = await ensureOldestMissingWorkflowRun(
+    env,
+    new Date("2026-08-15T04:07:00Z"),
+    noWaitOptions(async () => jsonResponse({ workflow_runs: runs })),
+  );
+  assert.equal(result.action, "skip_all_recent_success");
 });
 
 test("已成功日期不重复触发", async () => {

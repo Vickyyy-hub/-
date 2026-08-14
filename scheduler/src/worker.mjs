@@ -18,6 +18,15 @@ export function previousShanghaiDate(now = new Date()) {
   return previous.toISOString().slice(0, 10);
 }
 
+export function recentPreviousShanghaiDates(now = new Date(), days = 7) {
+  if (!Number.isInteger(days) || days < 1 || days > 31) {
+    throw new Error("追补天数必须为1至31天");
+  }
+  const previous = previousShanghaiDate(now);
+  return Array.from({ length: days }, (_, index) =>
+    utcDateOffset(previous, index - days + 1));
+}
+
 export function shanghaiDate(now = new Date()) {
   const parts = new Intl.DateTimeFormat("en-CA", {
     timeZone: SHANGHAI_TIME_ZONE,
@@ -181,6 +190,11 @@ function workflowRunsUrl(env, task) {
   return `https://api.github.com/repos/${encodeURIComponent(config.owner)}/${encodeURIComponent(config.repo)}/actions/workflows/${encodeURIComponent(config.workflow)}/runs?event=workflow_dispatch&branch=${encodeURIComponent(config.ref)}&per_page=30`;
 }
 
+function allWorkflowRunsUrl(env, task) {
+  const config = githubConfig(env, task);
+  return `https://api.github.com/repos/${encodeURIComponent(config.owner)}/${encodeURIComponent(config.repo)}/actions/workflows/${encodeURIComponent(config.workflow)}/runs?branch=${encodeURIComponent(config.ref)}&per_page=100`;
+}
+
 function workflowDispatchUrl(env, task) {
   const config = githubConfig(env, task);
   return `https://api.github.com/repos/${encodeURIComponent(config.owner)}/${encodeURIComponent(config.repo)}/actions/workflows/${encodeURIComponent(config.workflow)}/dispatches`;
@@ -201,6 +215,16 @@ export function selectMatchingRun(runs, targetDate, task, env = {}) {
 async function listWorkflowRuns(env, task, options) {
   const response = await requestWithRetry(
     workflowRunsUrl(env, task),
+    { method: "GET", headers: githubHeaders(env.GITHUB_TOKEN) },
+    options,
+  );
+  const payload = await response.json();
+  return payload.workflow_runs || [];
+}
+
+async function listAllWorkflowRuns(env, task, options) {
+  const response = await requestWithRetry(
+    allWorkflowRunsUrl(env, task),
     { method: "GET", headers: githubHeaders(env.GITHUB_TOKEN) },
     options,
   );
@@ -297,6 +321,32 @@ export async function ensureWorkflowRun(env, targetDate, options = {}) {
   throw new Error(`GitHub已接收调度请求，但未查到 ${targetDate} 的新运行`);
 }
 
+export async function ensureOldestMissingWorkflowRun(env, now = new Date(), options = {}) {
+  if (!env.GITHUB_TOKEN) {
+    throw new Error("缺少Cloudflare Secret: GITHUB_TOKEN");
+  }
+  const task = { pipeline: "website", phase: "daily" };
+  const spec = taskSpec(env, task);
+  const runs = await listAllWorkflowRuns(env, task, options);
+  const relevantRuns = runs.filter((run) =>
+    String(run.display_title || "").startsWith(`${spec.titlePrefix} · `));
+  const active = relevantRuns.find((run) => run.status !== "completed");
+  if (active) {
+    return { action: "skip_active_global", run: active, lookbackDays: 7 };
+  }
+
+  const dates = recentPreviousShanghaiDates(now, 7);
+  const targetDate = dates.find((date) => {
+    const expectedTitle = runTitle(env, date, task);
+    return !relevantRuns.some((run) =>
+      run.display_title === expectedTitle && run.conclusion === "success");
+  });
+  if (!targetDate) {
+    return { action: "skip_all_recent_success", lookbackDays: 7, dates };
+  }
+  return ensureWorkflowRun(env, targetDate, { ...options, task });
+}
+
 export function jobsForCron(cron, now = new Date()) {
   const previous = previousShanghaiDate(now);
   if (["7 0 * * *", "37 0 * * *", "7 1 * * *"].includes(cron)) {
@@ -304,6 +354,13 @@ export function jobsForCron(cron, now = new Date()) {
       { task: { pipeline: "website", phase: "daily" }, targetDate: previous },
       { task: { pipeline: "wechat", phase: "daily" }, targetDate: previous },
     ];
+  }
+  if (cron === "7 4 * * *") {
+    return [{
+      task: { pipeline: "website", phase: "daily" },
+      recoveryLookbackDays: 7,
+      scheduledAt: now,
+    }];
   }
   throw new Error(`未配置的Cron：${cron}`);
 }
@@ -322,10 +379,13 @@ function bearerToken(request) {
 
 export default {
   async scheduled(controller, env, ctx) {
-    const jobs = jobsForCron(controller.cron, new Date(controller.scheduledTime));
+    const scheduledAt = new Date(controller.scheduledTime);
+    const jobs = jobsForCron(controller.cron, scheduledAt);
     ctx.waitUntil(
-      Promise.all(jobs.map(({ task, targetDate }) =>
-        ensureWorkflowRun(env, targetDate, { task })
+      Promise.all(jobs.map(({ task, targetDate, recoveryLookbackDays }) =>
+        (recoveryLookbackDays
+          ? ensureOldestMissingWorkflowRun(env, scheduledAt, { task })
+          : ensureWorkflowRun(env, targetDate, { task }))
           .then((result) => console.log(JSON.stringify({ event: "scheduled_dispatch", ...result })))
           .catch((error) => {
             console.error(JSON.stringify({
