@@ -82,6 +82,12 @@ class RunReport:
     invalid_ai_skipped: int = 0
     content_safety_skipped: int = 0
     body_unavailable_skipped: int = 0
+    progressive_write_batches: int = 0
+    progressive_written: int = 0
+    progressive_updated: int = 0
+    first_write_at: str = ""
+    last_write_at: str = ""
+    final_output_verified: bool = False
 
     @property
     def partial(self) -> bool:
@@ -153,4 +159,10 @@ class RunReport:
             "invalid_ai_skipped": self.invalid_ai_skipped,
             "content_safety_skipped": self.content_safety_skipped,
             "body_unavailable_skipped": self.body_unavailable_skipped,
+            "progressive_write_batches": self.progressive_write_batches,
+            "progressive_written": self.progressive_written,
+            "progressive_updated": self.progressive_updated,
+            "first_write_at": self.first_write_at,
+            "last_write_at": self.last_write_at,
+            "final_output_verified": self.final_output_verified,
         }

@@ -5,9 +5,9 @@ import os
 import time
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import date
+from datetime import date, datetime, timezone
 from pathlib import Path
-from typing import Iterable
+from typing import Callable, Iterable
 
 from .adapters import ADAPTERS, ExcludedArticle, SourceAdapter
 from .ai import (
@@ -31,6 +31,54 @@ from .text import clean_text, normalize_title, normalize_url, similarity
 class Pipeline:
     ANALYSIS_SOURCE_ORDER = ("虎嗅", "少数派", "界面新闻", "IT之家", "钛媒体", "36氪")
     PRIMARY_SOURCE = "虎嗅"
+
+    @staticmethod
+    def _record_write_time(report: RunReport) -> None:
+        timestamp = datetime.now(timezone.utc).isoformat()
+        if not report.first_write_at:
+            report.first_write_at = timestamp
+        report.last_write_at = timestamp
+
+    @classmethod
+    def _sync_feishu(
+        cls,
+        feishu: FeishuBitable,
+        valuable: list[Article],
+        report: RunReport,
+        *,
+        final: bool,
+    ) -> list[Article]:
+        selected, duplicates = cls._assign_statuses(valuable)
+        url_index, title_index = feishu.record_index()
+        targets: list[Article] = []
+        for article in valuable:
+            record = url_index.get(normalize_url(article.url)) or title_index.get(normalize_title(article.title))
+            if record:
+                article.record_id = str(record.get("record_id", ""))
+                targets.append(article)
+            elif article.record_status != "普通重复稿":
+                targets.append(article)
+        if targets:
+            written, updated, failed = feishu.upsert(targets)
+            invalid = feishu.verify_article_states(targets)
+            report.write_failed += max(failed, len(invalid))
+            cls._record_write_time(report)
+            if not final:
+                report.progressive_write_batches += 1
+                report.progressive_written += written
+                report.progressive_updated += updated
+            if (failed or invalid) and not final:
+                raise RuntimeError(
+                    f"飞书阶段写入验收失败：API失败={failed}，记录不一致={len(invalid)}"
+                )
+        if final:
+            selected_invalid = feishu.verify_article_states(selected)
+            report.event_duplicates = duplicates
+            report.selected = len(selected)
+            report.written = max(0, len(selected) - len(selected_invalid))
+            report.write_failed = max(report.write_failed, len(selected_invalid))
+            report.final_output_verified = report.write_failed == 0 and not selected_invalid
+        return selected
 
     def __init__(self, source_keys: list[str]) -> None:
         self.http = HttpClient(timeout=int(os.environ.get("HTTP_TIMEOUT", "35")))
@@ -242,6 +290,7 @@ class Pipeline:
         *,
         job_id: str,
         include_rejected: bool = False,
+        progressive_callback: Callable[[list[Article]], None] | None = None,
     ) -> tuple[list[Article], bool]:
         if not articles:
             return [], True
@@ -267,6 +316,9 @@ class Pipeline:
                 resume_index = previous_index
         state.save_progress(job_id, manifest, resume_index, None, "running")
         complete = True
+        progressive_interval = max(60, int(os.environ.get("PROGRESSIVE_WRITE_INTERVAL_MINUTES", "60")) * 60)
+        next_progressive_write = time.monotonic() + progressive_interval
+        last_progressive_count = 0
         try:
             for index, article in enumerate(ordered):
                 source_result = source_by_name[article.source]
@@ -374,6 +426,24 @@ class Pipeline:
                 if include_rejected or result.get("valuable"):
                     analyzed.append(article)
                 state.save_progress(job_id, manifest, index + 1, None, "running")
+                if (
+                    progressive_callback is not None
+                    and len(analyzed) > last_progressive_count
+                    and time.monotonic() >= next_progressive_write
+                ):
+                    try:
+                        progressive_callback(list(analyzed))
+                    except Exception as exc:
+                        source_result.errors.append(f"阶段写入失败 {article.url}: {exc}")
+                        state.save_progress(job_id, manifest, index + 1, article.url, "output_retry")
+                        report.checkpoint_index = index + 1
+                        report.pending_articles = len(ordered) - index - 1
+                        complete = False
+                        break
+                    last_progressive_count = len(analyzed)
+                    now = time.monotonic()
+                    while next_progressive_write <= now:
+                        next_progressive_write += progressive_interval
             if complete:
                 state.save_progress(job_id, manifest, len(ordered), None, "complete")
                 report.checkpoint_index = len(ordered)
@@ -494,10 +564,7 @@ class Pipeline:
         if lengths:
             report.summary_char_min = min(lengths)
             report.summary_char_max = max(lengths)
-        written, failed = feishu.write(selected)
-        missing = feishu.verify_urls(selected)
-        report.written = max(0, len(selected) - len(missing))
-        report.write_failed = max(failed, len(missing))
+        self._sync_feishu(feishu, cached_valuable, report, final=True)
         report_path.write_text(json.dumps(report.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8")
         return report
 
@@ -539,20 +606,25 @@ class Pipeline:
             if not backfill and not dry_run:
                 assert feishu is not None
                 existing_urls, existing_titles = feishu.existing_keys()
-                unseen_articles = [
-                    article for article in articles
-                    if normalize_url(article.url) not in existing_urls
-                    and normalize_title(article.title) not in existing_titles
-                ]
-                report.existing_duplicates = len(articles) - len(unseen_articles)
-                articles = unseen_articles
+                report.existing_duplicates = sum(
+                    1 for article in articles
+                    if normalize_url(article.url) in existing_urls
+                    or normalize_title(article.title) in existing_titles
+                )
             mode = "backfill" if backfill else ("dry" if dry_run else "daily")
             source_part = "-".join(sorted(self.adapters))
+            progressive_callback = None
+            if not backfill and not dry_run:
+                assert feishu is not None
+                progressive_callback = lambda current: self._sync_feishu(
+                    feishu, current, report, final=False
+                )
             analyzed, analysis_complete = self.analyze(
                 articles,
                 report,
                 job_id=f"{day.isoformat()}:{mode}:{source_part}",
                 include_rejected=backfill,
+                progressive_callback=progressive_callback,
             )
             valuable = [article for article in analyzed if (article.ai_result or {}).get("valuable")]
             selected, report.event_duplicates = self._assign_statuses(valuable)
@@ -577,9 +649,7 @@ class Pipeline:
                 report.update_failed = max(failed, len(missing))
             elif not dry_run:
                 assert feishu is not None
-                written, failed = feishu.write(selected)
-                missing = feishu.verify_urls(selected)
-                report.written = max(0, len(selected) - len(missing))
-                report.write_failed = max(failed, len(missing))
+                selected = self._sync_feishu(feishu, valuable, report, final=True)
+                report.selected = len(selected)
         report_path.write_text(json.dumps(report.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8")
         return report

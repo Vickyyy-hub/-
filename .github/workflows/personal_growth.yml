@@ -99,6 +99,7 @@ jobs:
       ARK_BACKOFF_SECONDS: "60,120,300,600"
       STATE_DB: .state/news_pipeline.sqlite
       MAX_RUNTIME_MINUTES: "280"
+      PROGRESSIVE_WRITE_INTERVAL_MINUTES: "60"
       PYTHONUNBUFFERED: "1"
     steps:
       - name: 确定目标日期
@@ -227,6 +228,10 @@ jobs:
               errors.append("partial=true")
           if int(report.get("write_failed", 0)):
               errors.append(f"write_failed={report['write_failed']}")
+          if int(report.get("pending_articles", 0)):
+              errors.append(f"pending_articles={report['pending_articles']}")
+          if not report.get("final_output_verified"):
+              errors.append("final_output_verified=false")
           sources = report.get("sources") or {}
           expected_sources = {"huxiu", "sspai", "jiemian", "tmtpost", "36kr"}
           if set(sources) != expected_sources:
@@ -263,6 +268,10 @@ jobs:
               errors.append("AI调用不为0")
           if int(report.get("write_failed", 0)):
               errors.append(f"write_failed={report['write_failed']}")
+          if int(report.get("pending_articles", 0)):
+              errors.append(f"pending_articles={report['pending_articles']}")
+          if not report.get("final_output_verified"):
+              errors.append("final_output_verified=false")
           sources = report.get("sources") or {}
           expected_sources = {"huxiu", "sspai", "jiemian", "tmtpost", "36kr"}
           if set(sources) != expected_sources:

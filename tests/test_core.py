@@ -537,11 +537,15 @@ def test_complete_cached_recovery_is_not_marked_user_truncated(monkeypatch, tmp_
             return set(), set()
 
         @staticmethod
-        def write(articles):
-            return 0, 0
+        def record_index():
+            return {}, {}
 
         @staticmethod
-        def verify_urls(articles):
+        def upsert(articles):
+            return 0, 0, 0
+
+        @staticmethod
+        def verify_article_states(articles):
             return set()
 
     monkeypatch.setattr("personal_growth.pipeline.FeishuBitable", lambda http: FakeFeishu())
@@ -551,6 +555,115 @@ def test_complete_cached_recovery_is_not_marked_user_truncated(monkeypatch, tmp_
     report = pipeline.write_cached(date(2026, 8, 11), complete_recovery=True, report_path=tmp_path / "report.json")
     assert report.cached_only is True
     assert report.truncated_by_user is False
+    assert report.final_output_verified is True
+
+
+def test_progressive_report_fields_are_serialized():
+    report = RunReport(
+        "2026-08-13",
+        progressive_write_batches=2,
+        progressive_written=10,
+        progressive_updated=3,
+        first_write_at="2026-08-14T01:08:00+00:00",
+        last_write_at="2026-08-14T02:08:00+00:00",
+        final_output_verified=True,
+    )
+    payload = report.to_dict()
+    assert payload["progressive_write_batches"] == 2
+    assert payload["progressive_written"] == 10
+    assert payload["progressive_updated"] == 3
+    assert payload["final_output_verified"] is True
+
+
+def test_progressive_callback_runs_once_per_elapsed_hour(monkeypatch, tmp_path):
+    monkeypatch.setenv("STATE_DB", str(tmp_path / "state.sqlite"))
+    monkeypatch.setenv("PROGRESSIVE_WRITE_INTERVAL_MINUTES", "1")
+    articles = [
+        Article("虎嗅", f"文章{i}", f"https://example.com/hour/{i}", from_epoch(1786195964 + i), body="正文" * 500)
+        for i in range(2)
+    ]
+
+    class FakeAnalyzer:
+        model = "test-model"
+
+        def __init__(self):
+            self.filter_calls = self.summary_calls = self.cache_hits = self.rate_limit_count = 0
+            self.retry_wait_seconds = 0.0
+
+        def analyze(self, article, filter_evidence, summary_evidence, cache_key, state):
+            return {
+                "status": "入选", "valuable": True, "event_key": article.title,
+                "topics": ["商业"], "category": "商业与公司", "unique_points": [article.title],
+                "score_total": 15,
+                "scores": {"importance": 3, "information_gain": 3, "social_impact": 3,
+                           "actionability": 3, "evidence_density": 3},
+                "core_content": "甲" * 105 + "\n\n" + "乙" * 105 + "\n\n" + "丙" * 105,
+                "summary_chars": 315,
+            }
+
+    values = iter([0, 1, 61, 61, 62, 121, 121])
+    monkeypatch.setattr("personal_growth.pipeline.ArkAnalyzer", FakeAnalyzer)
+    monkeypatch.setattr("personal_growth.pipeline.time.monotonic", lambda: next(values))
+    pipeline = object.__new__(Pipeline)
+    pipeline.deadline = 1_000
+    report = RunReport("2026-08-13", sources={"huxiu": SourceResult("虎嗅", coverage_complete=True)})
+    batches = []
+    analyzed, complete = pipeline.analyze(
+        articles, report, job_id="hourly", progressive_callback=lambda current: batches.append(len(current))
+    )
+    assert complete is True
+    assert len(analyzed) == 2
+    assert batches == [1, 2]
+
+
+def test_final_sync_downgrades_early_record_without_deleting():
+    first = Article("虎嗅", "同一事件旧稿", "https://example.com/old", from_epoch(1786195964))
+    second = Article("界面新闻", "同一事件新稿", "https://example.com/new", from_epoch(1786195965))
+    summary = "甲" * 105 + "\n\n" + "乙" * 105 + "\n\n" + "丙" * 105
+    first.ai_result = {
+        "valuable": True, "event_key": "同一事件", "score_total": 10,
+        "scores": {"information_gain": 1, "evidence_density": 1},
+        "unique_points": ["相同事实"], "core_content": summary,
+    }
+    second.ai_result = {
+        "valuable": True, "event_key": "同一事件", "score_total": 20,
+        "scores": {"information_gain": 4, "evidence_density": 4},
+        "unique_points": ["相同事实"], "core_content": summary,
+    }
+    records = {}
+
+    class FakeFeishu:
+        def record_index(self):
+            by_url = {normalize_url(url): record for url, record in records.items()}
+            return by_url, {}
+
+        def upsert(self, articles):
+            written = updated = 0
+            for article in articles:
+                if article.url in records:
+                    updated += 1
+                else:
+                    written += 1
+                records[article.url] = {
+                    "record_id": article.url,
+                    "fields": {"记录状态": article.record_status, "核心干货": summary, "日报日期": 1},
+                }
+            return written, updated, 0
+
+        def verify_article_states(self, articles):
+            return {
+                article.url for article in articles
+                if records.get(article.url, {}).get("fields", {}).get("记录状态") != article.record_status
+            }
+
+    report = RunReport("2026-08-13")
+    Pipeline._sync_feishu(FakeFeishu(), [first], report, final=False)
+    assert records[first.url]["fields"]["记录状态"] == "主稿"
+    Pipeline._sync_feishu(FakeFeishu(), [first, second], report, final=True)
+    assert set(records) == {first.url, second.url}
+    assert records[first.url]["fields"]["记录状态"] == "普通重复稿"
+    assert records[second.url]["fields"]["记录状态"] == "主稿"
+    assert report.final_output_verified is True
 
 
 def test_ark_429_exposes_original_error(monkeypatch):

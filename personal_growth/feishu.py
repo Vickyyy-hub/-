@@ -255,6 +255,50 @@ class FeishuBitable:
                 failed += len(batch)
         return updated, failed
 
+    def upsert(self, articles: Iterable[Article]) -> tuple[int, int, int]:
+        """Create unseen articles and update changed staged/final records idempotently."""
+        url_index, title_index = self.record_index()
+        creates: list[Article] = []
+        updates: list[Article] = []
+        for article in articles:
+            record = url_index.get(normalize_url(article.url)) or title_index.get(normalize_title(article.title))
+            if not record:
+                creates.append(article)
+                continue
+            article.record_id = str(record.get("record_id", ""))
+            fields = record.get("fields") or {}
+            current_status = self._extract_text(fields.get("记录状态"))
+            current_content = self._extract_text(fields.get("核心干货"))
+            expected_content = str((article.ai_result or {}).get("core_content", ""))
+            if (
+                current_status != (article.record_status or "主稿")
+                or current_content != expected_content
+                or fields.get("日报日期") in (None, "")
+            ):
+                updates.append(article)
+        written, create_failed = self.write(creates)
+        updated, update_failed = self.update(updates)
+        return written, updated, create_failed + update_failed
+
+    def verify_article_states(self, articles: Iterable[Article]) -> set[str]:
+        """Return URL/title keys whose record, daily date, content, or status is missing."""
+        url_index, title_index = self.record_index()
+        invalid: set[str] = set()
+        for article in articles:
+            key = normalize_url(article.url) or normalize_title(article.title)
+            record = url_index.get(normalize_url(article.url)) or title_index.get(normalize_title(article.title))
+            if not record:
+                invalid.add(key)
+                continue
+            fields = record.get("fields") or {}
+            if (
+                self._extract_text(fields.get("记录状态")) != (article.record_status or "主稿")
+                or self._extract_text(fields.get("核心干货")) != str((article.ai_result or {}).get("core_content", ""))
+                or fields.get("日报日期") in (None, "")
+            ):
+                invalid.add(key)
+        return invalid
+
     def backfill_daily_dates(self) -> tuple[int, int, int]:
         records = self.list_records()
         updates: list[dict[str, Any]] = []
