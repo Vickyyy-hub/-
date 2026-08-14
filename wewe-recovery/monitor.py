@@ -232,6 +232,7 @@ def dispatch_recovery(config: Config, event: str, dates: list[str]) -> None:
         headers={
             "Authorization": f"Bearer {config.recovery_secret}",
             "Content-Type": "application/json",
+            "User-Agent": "wewe-recovery-monitor/1.0",
         },
         method="POST",
     )
