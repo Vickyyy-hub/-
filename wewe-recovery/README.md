@@ -8,10 +8,12 @@
 
 ## 管理入口
 
-固定管理地址为 `https://rss.kongye.site/dash/accounts`。`/dash/` 使用独立
-HTTP Basic 密码保护，进入页面后仍需 WeWeRSS AuthCode；`/trpc/` 保留
-WeWeRSS 自身鉴权，避免两个鉴权层争用 `Authorization` 请求头。
+固定管理地址为 `https://rss.kongye.site/dash/accounts`。后台只使用一组强
+WeWeRSS AuthCode：`/dash/` 提供管理页面，`/trpc/` 由 WeWeRSS AuthCode
+鉴权。不要为 `/dash/` 增加 HTTP Basic，因为两者都会占用
+`Authorization` 请求头并导致后台循环提示“请求失败”。
 
-Nginx 示例位于 `nginx-admin.inc.example`。服务器仅保存 Basic 密码哈希，
-真实密码和 AuthCode 不得写入仓库或运行日志。RSS 随机令牌路径保持独立，
-裸 `/feeds` 和其他未知路径继续拒绝公网访问。
+Nginx 示例位于 `nginx-admin.inc.example`。AuthCode 不得写入仓库或运行日志。
+原 HTTP Basic 用户名和密码已停用；切换后应关闭该域名的旧标签页，首次用
+无痕窗口打开，避免浏览器缓存旧 Basic 凭据。RSS 随机令牌路径保持独立，裸
+`/feeds` 和其他未知路径继续拒绝公网访问，WeWeRSS 容器端口只监听本机。

@@ -1,13 +1,10 @@
-# Public management UI. Keep HTTP Basic Auth off /trpc because WeWeRSS uses
-# the Authorization header for its own AuthCode.
+# Public management shell. WeWeRSS protects management APIs with its AuthCode.
+# Do not enable HTTP Basic here: both mechanisms use the Authorization header.
 location = /dash {
     return 302 /dash/;
 }
 
 location ^~ /dash/ {
-    auth_basic "WeWeRSS Admin";
-    auth_basic_user_file /www/server/nginx/conf/.wewe-rss-admin.htpasswd;
-
     limit_except GET HEAD {
         deny all;
     }
@@ -29,9 +26,6 @@ location ^~ /dash/ {
 }
 
 location = /favicon.ico {
-    auth_basic "WeWeRSS Admin";
-    auth_basic_user_file /www/server/nginx/conf/.wewe-rss-admin.htpasswd;
-
     proxy_pass http://127.0.0.1:14000;
     proxy_set_header Authorization "";
     limit_conn perip 5;
