@@ -7,6 +7,7 @@ import fcntl
 import hashlib
 import json
 import os
+import re
 import sqlite3
 import subprocess
 import sys
@@ -21,7 +22,12 @@ from zoneinfo import ZoneInfo
 
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
-FAILURE_MARKERS = ("401", "429", "暂无可用读书账号")
+ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;]*m")
+FAILURE_PATTERNS = {
+    "401": re.compile(r"(?:status(?: code)?|HTTP)\s*[:=]?\s*401\b|\b401 Unauthorized\b", re.IGNORECASE),
+    "429": re.compile(r"(?:status(?: code)?|HTTP)\s*[:=]?\s*429\b|\b429 Too Many Requests\b", re.IGNORECASE),
+    "暂无可用读书账号": re.compile(r"暂无可用读书账号"),
+}
 
 
 class RecoveryError(RuntimeError):
@@ -164,6 +170,19 @@ def recovery_dates(disabled_since: str | None, today: date, maximum: int) -> lis
     return [(start + timedelta(days=offset)).isoformat() for offset in range((today - start).days + 1)]
 
 
+def refresh_failure_markers(output: str) -> list[str]:
+    """Match actual error messages, not article JSON containing numeric substrings."""
+    matches: set[str] = set()
+    for raw_line in output.splitlines():
+        line = ANSI_ESCAPE.sub("", raw_line)
+        if "create results:" in line:
+            continue
+        for name, pattern in FAILURE_PATTERNS.items():
+            if pattern.search(line):
+                matches.add(name)
+    return sorted(matches)
+
+
 def refresh_wewe(config: Config, before: dict[str, int], started_at: datetime) -> None:
     auth_code = parse_env_value(config.wewe_env_path, "AUTH_CODE")
     request = urllib.request.Request(
@@ -201,7 +220,7 @@ def refresh_wewe(config: Config, before: dict[str, int], started_at: datetime) -
         timeout=30,
     )
     output = f"{completed.stdout}\n{completed.stderr}"
-    matched = [marker for marker in FAILURE_MARKERS if marker in output]
+    matched = refresh_failure_markers(output)
     if matched:
         raise RecoveryError(f"刷新日志出现失败标记：{','.join(matched)}")
 

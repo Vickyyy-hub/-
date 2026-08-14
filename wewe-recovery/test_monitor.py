@@ -6,7 +6,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from monitor import Config, RecoveryError, event_id, recovery_dates, run_once
+from monitor import Config, RecoveryError, event_id, recovery_dates, refresh_failure_markers, run_once
 
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
@@ -145,3 +145,11 @@ def test_event_id_does_not_expose_account_id() -> None:
     value = event_id({"id": 316861191, "updated_at": 1786677164517})
     assert value.startswith("login-20260814T111244-")
     assert "316861191" not in value
+
+
+def test_log_check_ignores_article_data_but_detects_real_http_errors() -> None:
+    article_line = 'refresh create results: [{"title":"401种方法","picUrl":"https://x/429.jpg"}]'
+    assert refresh_failure_markers(article_line) == []
+    assert refresh_failure_markers("AxiosError: Request failed with status code 401") == ["401"]
+    assert refresh_failure_markers("HTTP 429 Too Many Requests") == ["429"]
+    assert refresh_failure_markers("暂无可用读书账号") == ["暂无可用读书账号"]
