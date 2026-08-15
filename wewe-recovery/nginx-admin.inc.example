@@ -18,6 +18,8 @@ location ^~ /dash/ {
     proxy_set_header Authorization "";
     proxy_set_header Accept-Encoding "";
     sub_filter_once off;
+    sub_filter "window.__WEWE_RSS_SERVER_ORIGIN_URL__ = 'http://127.0.0.1:14000';"
+               "window.__WEWE_RSS_SERVER_ORIGIN_URL__ = 'https://rss.kongye.site';";
     sub_filter 'http://127.0.0.1:14000/favicon.ico' '/favicon.ico';
     proxy_connect_timeout 10s;
     proxy_send_timeout 120s;
