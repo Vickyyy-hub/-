@@ -206,8 +206,21 @@ class MarketPipeline:
         analyzer = None if collect_only else self._analyzer_or_warning(report)
         if not collect_only and analyzer is None:
             raise ModelSystemError("AI未启用，禁止生成低证据画像")
+        profile_store = MarketStore()
+        try:
+            cached_profiles = profile_store.load_profiles()
+        finally:
+            profile_store.close()
         profiles: list[CountryProfile] = []
         for code, country in self.country_map.items():
+            cached_profile = cached_profiles.get(code, {})
+            cached_updated = str(cached_profile.get("updated_at") or "")
+            if not collect_only and cached_updated.startswith(day.isoformat()):
+                values = dict(cached_profile)
+                values["updated_at"] = datetime.fromisoformat(cached_updated)
+                profiles.append(CountryProfile(**values))
+                report.cache_hits += 1
+                continue
             if analyzer and by_country.get(code):
                 try:
                     profiles.append(analyzer.build_profile(country, by_country[code]))

@@ -112,6 +112,17 @@ def test_sqlite_dedup_and_country_window(tmp_path):
         store.close()
 
 
+def test_sqlite_profile_cache(tmp_path):
+    now = datetime.now(SHANGHAI)
+    profile = CountryProfile("GB", "英国", "欧洲", "英语", "GBP", "Europe/London", updated_at=now)
+    store = MarketStore(str(tmp_path / "state.sqlite"))
+    try:
+        store.upsert_profiles([profile])
+        assert store.load_profiles()["GB"]["country_name"] == "英国"
+    finally:
+        store.close()
+
+
 def test_feishu_row_shapes_and_dates():
     now = datetime.now(SHANGHAI)
     signal = Signal("s", "x", "X", "政策", "Title", "https://example.com", now, ["DE"])

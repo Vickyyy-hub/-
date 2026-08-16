@@ -132,5 +132,9 @@ class MarketStore:
             )
         self.connection.commit()
 
+    def load_profiles(self) -> dict[str, dict]:
+        rows = self.connection.execute("SELECT country_code, payload_json FROM profiles").fetchall()
+        return {code: json.loads(payload) for code, payload in rows}
+
     def close(self) -> None:
         self.connection.close()
