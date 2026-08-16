@@ -129,7 +129,23 @@ class MarketPipeline:
         signals: list[Signal] = []
         for cadence in cadences:
             signals.extend(self._collect(cadence, day, report))
-        report.pending_articles = len(signals)
+        cache_store = MarketStore()
+        try:
+            cached = cache_store.load_signals_by_ids([item.signal_id for item in signals])
+        finally:
+            cache_store.close()
+        pending: list[Signal] = []
+        for signal in signals:
+            previous = cached.get(signal.signal_id, {})
+            if previous.get("summary_zh") or previous.get("keyword_zh") or previous.get("ai_conclusion"):
+                signal.keyword_zh = previous.get("keyword_zh", "")
+                signal.summary_zh = previous.get("summary_zh", "")
+                signal.ai_conclusion = previous.get("ai_conclusion", "")
+                signal.topics = list(previous.get("topics") or [])
+                report.cache_hits += 1
+            else:
+                pending.append(signal)
+        report.pending_articles = len(pending)
         feishu = None if dry_run or collect_only else self._feishu()
         progressive_interval = int(
             feishu_config().get("progressive_write_interval_minutes", PROGRESSIVE_WRITE_INTERVAL_MINUTES)
@@ -154,7 +170,7 @@ class MarketPipeline:
             analyzer = self._analyzer_or_warning(report)
             if analyzer:
                 try:
-                    signals = analyzer.enrich_signals(signals, progressive_callback=progressive_callback)
+                    analyzer.enrich_signals(pending, progressive_callback=progressive_callback)
                     report.ai_calls += analyzer.calls
                     report.rate_limits += analyzer.rate_limits
                     report.retry_wait_seconds += analyzer.retry_wait_seconds

@@ -49,20 +49,25 @@ class MarketStore:
     def upsert_signals(self, signals: list[Signal]) -> tuple[int, int]:
         inserted = duplicates = 0
         for signal in signals:
-            cursor = self.connection.execute(
-                "INSERT OR IGNORE INTO signals VALUES (?, ?, ?, ?, ?)",
-                (
-                    signal.signal_id,
-                    signal.published_at.isoformat(),
-                    json.dumps(signal.countries, ensure_ascii=False),
-                    signal.signal_type,
-                    json.dumps(signal.to_dict(), ensure_ascii=False),
-                ),
+            values = (
+                signal.signal_id,
+                signal.published_at.isoformat(),
+                json.dumps(signal.countries, ensure_ascii=False),
+                signal.signal_type,
+                json.dumps(signal.to_dict(), ensure_ascii=False),
             )
-            if cursor.rowcount:
-                inserted += 1
-            else:
+            exists = self.connection.execute(
+                "SELECT 1 FROM signals WHERE signal_id = ?", (signal.signal_id,)
+            ).fetchone()
+            if exists:
+                self.connection.execute(
+                    "UPDATE signals SET published_at=?, countries_json=?, signal_type=?, payload_json=? WHERE signal_id=?",
+                    (values[1], values[2], values[3], values[4], values[0]),
+                )
                 duplicates += 1
+            else:
+                self.connection.execute("INSERT INTO signals VALUES (?, ?, ?, ?, ?)", values)
+                inserted += 1
         self.connection.commit()
         return inserted, duplicates
 
@@ -102,6 +107,20 @@ class MarketStore:
         result = [json.loads(row[0]) for row in rows]
         if country_code:
             result = [item for item in result if country_code in item.get("countries", [])]
+        return result
+
+    def load_signals_by_ids(self, signal_ids: list[str]) -> dict[str, dict]:
+        if not signal_ids:
+            return {}
+        result: dict[str, dict] = {}
+        for start in range(0, len(signal_ids), 400):
+            batch = signal_ids[start:start + 400]
+            placeholders = ",".join("?" for _ in batch)
+            rows = self.connection.execute(
+                f"SELECT signal_id, payload_json FROM signals WHERE signal_id IN ({placeholders})",
+                batch,
+            ).fetchall()
+            result.update({signal_id: json.loads(payload) for signal_id, payload in rows})
         return result
 
     def upsert_profiles(self, profiles: list[CountryProfile]) -> None:

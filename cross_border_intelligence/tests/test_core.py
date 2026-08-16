@@ -103,6 +103,9 @@ def test_sqlite_dedup_and_country_window(tmp_path):
     try:
         assert store.upsert_signals([item]) == (1, 0)
         assert store.upsert_signals([item]) == (0, 1)
+        item.summary_zh = "已分析摘要"
+        assert store.upsert_signals([item]) == (0, 1)
+        assert store.load_signals_by_ids(["sig1"])["sig1"]["summary_zh"] == "已分析摘要"
         assert len(store.load_signals(datetime(2020, 1, 1, tzinfo=SHANGHAI), "GB")) == 1
         assert store.load_signals(datetime(2020, 1, 1, tzinfo=SHANGHAI), "DE") == []
     finally:
