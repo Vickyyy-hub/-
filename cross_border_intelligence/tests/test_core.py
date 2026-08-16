@@ -4,7 +4,7 @@ from datetime import date, datetime
 
 from personal_growth.collectors import Collector, signal_id
 from personal_growth.config import countries, load_config, sources
-from personal_growth.feishu import direction_rows, profile_rows, signal_rows, source_rows
+from personal_growth.feishu import FeishuMarketBase, direction_rows, profile_rows, signal_rows, source_rows
 from personal_growth.models import CountryProfile, ProductDirection, Signal
 from personal_growth.store import MarketStore
 from personal_growth.text import SHANGHAI
@@ -137,6 +137,17 @@ def test_feishu_row_shapes_and_dates():
     row = direction_rows([direction.to_dict()])[0]
     assert row["建议"] == "观察"
     assert row["证据数量"] == 2
+
+
+def test_feishu_signal_fallback_does_not_merge_countries_or_shared_trend_urls():
+    base = object.__new__(FeishuMarketBase)
+    base._records = lambda _table: [
+        {"record_id": "gb-air", "fields": {"信号ID": "old-gb", "国家": "GB", "来源名称": "Google Trends 每日热搜", "信号类型": "搜索趋势", "原文标题": "air fryer", "原词": "air fryer", "原文链接": "https://trends.google.com/trending"}},
+        {"record_id": "de-air", "fields": {"信号ID": "old-de", "国家": "DE", "来源名称": "Google Trends 每日热搜", "信号类型": "搜索趋势", "原文标题": "air fryer", "原词": "air fryer", "原文链接": "https://trends.google.com/trending"}},
+    ]
+    existing = base.existing_keys("signals")
+    assert len(existing["titles"]) == 2
+    assert existing["urls"] == {}
 
 
 def test_source_table_includes_disabled_optional_sources():

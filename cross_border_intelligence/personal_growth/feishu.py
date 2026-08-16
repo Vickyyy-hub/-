@@ -167,6 +167,20 @@ class FeishuMarketBase:
             return str(value.get("text") or value.get("link") or "")
         return str(value or "")
 
+    @classmethod
+    def _signal_identity(cls, fields: dict[str, Any]) -> tuple[str, str]:
+        scope = "|".join((
+            cls._text(fields.get("国家")).strip().casefold(),
+            cls._text(fields.get("来源名称")).strip().casefold(),
+            cls._text(fields.get("信号类型")).strip().casefold(),
+        ))
+        title = normalize_title(cls._text(fields.get("原文标题")))
+        title_key = f"{scope}|{title}" if title else ""
+        # Google Trends 等关键词记录会共享落地页，不能只按 URL 合并不同关键词。
+        url = cls._text(fields.get("原文链接"))
+        url_key = "" if cls._text(fields.get("原词")) else (f"{scope}|{normalize_url(url)}" if url else "")
+        return title_key, url_key
+
     def existing_keys(self, table_name: str) -> dict[str, dict[str, str]]:
         spec = TABLES[table_name]
         result: dict[str, dict[str, str]] = {"keys": {}, "titles": {}, "urls": {}}
@@ -177,12 +191,11 @@ class FeishuMarketBase:
             if key:
                 result["keys"][key] = record_id
             if table_name == "signals":
-                title = normalize_title(self._text(fields.get("原文标题")))
-                url = self._text(fields.get("原文链接"))
-                if title:
-                    result["titles"][title] = record_id
-                if url:
-                    result["urls"][normalize_url(url)] = record_id
+                title_key, url_key = self._signal_identity(fields)
+                if title_key:
+                    result["titles"][title_key] = record_id
+                if url_key:
+                    result["urls"][url_key] = record_id
         return result
 
     def upsert(self, table_name: str, rows: list[dict[str, Any]]) -> tuple[int, int]:
@@ -199,9 +212,8 @@ class FeishuMarketBase:
                 raise RuntimeError(f"{spec['name']}存在空主键")
             record_id = existing["keys"].get(key)
             if table_name == "signals" and not record_id:
-                title = normalize_title(self._text(row.get("原文标题")))
-                url = self._text(row.get("原文链接"))
-                record_id = existing["titles"].get(title) or (existing["urls"].get(normalize_url(url)) if url else None)
+                title_key, url_key = self._signal_identity(row)
+                record_id = existing["titles"].get(title_key) or (existing["urls"].get(url_key) if url_key else None)
             if record_id:
                 self._api("PUT", f"{base_path}/{record_id}", json={"fields": row})
                 updated += 1
@@ -210,6 +222,12 @@ class FeishuMarketBase:
                 record_id = str(((payload.get("data") or {}).get("record") or {}).get("record_id") or "")
                 created += 1
             existing["keys"][key] = str(record_id or "")
+            if table_name == "signals":
+                title_key, url_key = self._signal_identity(row)
+                if title_key:
+                    existing["titles"][title_key] = str(record_id or "")
+                if url_key:
+                    existing["urls"][url_key] = str(record_id or "")
         self.verify_urls(table_name, rows)
         return created, updated
 
