@@ -57,6 +57,30 @@ def test_google_trends_parsing_and_date_boundary():
     assert items[0].heat == 20000
 
 
+def test_google_trends_id_ignores_volatile_landing_url():
+    def collect(link):
+        xml = f"""<?xml version='1.0'?><rss xmlns:ht='https://trends.google.com/trending/rss'><channel>
+        <item><title>air fryer</title><link>{link}</link><pubDate>Thu, 13 Aug 2026 02:00:00 +0000</pubDate></item>
+        </channel></rss>""".encode()
+
+        class Response:
+            content = xml
+
+        class Http:
+            @staticmethod
+            def get(url):
+                return Response()
+
+        spec = next(item for item in sources(cadence="demand_daily") if item.key == "google_trends")
+        single = type(spec)(**{**spec.__dict__, "countries": ("GB",)})
+        return Collector(Http(), countries()).collect_google_trends(single, date(2026, 8, 13))[0][0]
+
+    first = collect("https://trends.google.com/a?volatile=1")
+    second = collect("https://trends.google.com/b?volatile=2")
+    assert first.signal_id == second.signal_id
+    assert first.url != second.url
+
+
 def test_federal_register_repeats_agency_query_parameter():
     captured = {}
 

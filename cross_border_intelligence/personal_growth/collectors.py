@@ -105,7 +105,8 @@ class Collector:
                     ))
                     signals.append(
                         Signal(
-                            signal_id(f"{spec.key}-{code}", item_url, title),
+                            # Trends 的落地链接会随抓取时刻变化；同一国家、日期和关键词必须保持同一主键。
+                            signal_id(f"{spec.key}-{code}-{day.isoformat()}", "", title),
                             spec.key, f"{spec.name}｜{country.name_zh}", spec.signal_type,
                             title, item_url, published, [code], original_language=country.language,
                             original_keyword=title, heat=heat, evidence=evidence[:4000],
