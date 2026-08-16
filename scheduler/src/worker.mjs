@@ -385,6 +385,37 @@ export function jobsForCron(cron, now = new Date()) {
       scheduledAt: now,
     }];
   }
+  if (cron === "17 0,1,2,3,4,8,12 * * *") {
+    const utcHour = now.getUTCHours();
+    const targetDate = shanghaiDate(now);
+    if ([0, 8, 12].includes(utcHour)) {
+      return [{ task: { pipeline: "cross_border", phase: "daily", job: "policy" }, targetDate }];
+    }
+    if (utcHour === 1) {
+      return [{ task: { pipeline: "cross_border", phase: "daily", job: "demand" }, targetDate }];
+    }
+    if (utcHour === 2) {
+      return now.getUTCDay() === 1
+        ? [{ task: { pipeline: "cross_border", phase: "daily", job: "weekly" }, targetDate }]
+        : [];
+    }
+    if (utcHour === 3) {
+      return now.getUTCDate() === 1
+        ? [{ task: { pipeline: "cross_border", phase: "daily", job: "profiles" }, targetDate }]
+        : [];
+    }
+    if (utcHour === 4) {
+      return [
+        { task: { pipeline: "cross_border", phase: "daily", job: "policy" }, targetDate },
+        {
+          task: { pipeline: "cross_border", phase: "daily", job: "demand" },
+          recoveryLookbackDays: 7,
+          scheduledAt: now,
+        },
+      ];
+    }
+    return [];
+  }
   const crossBorderJobs = {
     "17 0 * * *": "policy",
     "47 1 * * *": "demand",
