@@ -276,8 +276,9 @@
       "countries": [
         "CL"
       ],
-      "enabled": true,
-      "mode": "daily",
+      "enabled": false,
+      "mode": "diagnostic_only",
+      "notes": "官方栏目持续返回403且无稳定官方RSS；保留入口供人工核验，自动化由ALADI及智利官方统计来源补充覆盖",
       "priority_weight": 1
     },
     "dian": {
