@@ -298,6 +298,14 @@ class MarketPipeline:
         report = MarketRunReport(job, day, dry_run=dry_run, collect_only=collect_only)
         job_key = f"{job}:{day.isoformat()}"
         state = MarketStore()
+        if not dry_run and not collect_only and job != "policy" and state.is_complete(job_key):
+            report.coverage_complete = True
+            report.final_output_verified = True
+            report.completion_marker = True
+            report.warnings.append("同日任务已有完成标记，已跳过重复采集与写入")
+            state.close()
+            report_path.write_text(json.dumps(report.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8")
+            return report
         try:
             state.save_progress(job_key, {"stage": "started", "job": job, "target_date": day.isoformat()})
             if job in {"sources", "all"}:

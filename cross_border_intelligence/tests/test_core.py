@@ -6,6 +6,7 @@ from personal_growth.collectors import Collector, signal_id
 from personal_growth.config import countries, load_config, sources
 from personal_growth.feishu import FeishuMarketBase, direction_rows, profile_rows, signal_rows, source_rows
 from personal_growth.models import CountryProfile, ProductDirection, Signal
+from personal_growth.pipeline import MarketPipeline
 from personal_growth.store import MarketStore
 from personal_growth.text import SHANGHAI
 from main import resolve_job
@@ -145,6 +146,23 @@ def test_sqlite_profile_cache(tmp_path):
         assert store.load_profiles()["GB"]["country_name"] == "英国"
     finally:
         store.close()
+
+
+def test_completed_daily_job_is_not_collected_or_written_again(tmp_path, monkeypatch):
+    state_path = tmp_path / "state.sqlite"
+    monkeypatch.setenv("STATE_DB", str(state_path))
+    target = date(2026, 8, 16)
+    store = MarketStore(str(state_path))
+    try:
+        store.mark_complete("demand:2026-08-16", {"completion_marker": True})
+    finally:
+        store.close()
+    report = MarketPipeline().run("demand", target, report_path=tmp_path / "report.json")
+    assert report.written == 0
+    assert report.updated == 0
+    assert report.completion_marker is True
+    assert report.final_output_verified is True
+    assert "跳过重复采集" in report.warnings[0]
 
 
 def test_feishu_row_shapes_and_dates():
