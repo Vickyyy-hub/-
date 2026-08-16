@@ -1,5 +1,5 @@
 name: 公众号每日资讯
-run-name: 公众号每日资讯 · ${{ inputs.target_date || '自动日期' }} · ${{ inputs.trigger_source || github.event_name }}
+run-name: 公众号每日资讯 · ${{ inputs.recovery_dates || inputs.target_date || '自动日期' }} · ${{ inputs.trigger_source || github.event_name }}
 
 on:
   schedule:
@@ -13,6 +13,10 @@ on:
         type: string
       target_date:
         description: "处理日期（北京时间 YYYY-MM-DD；留空为前一日）"
+        required: false
+        type: string
+      recovery_dates:
+        description: "扫码恢复日期，1至7个逗号分隔日期；仅恢复入口使用"
         required: false
         type: string
       sources:
@@ -64,9 +68,51 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      dates: ${{ steps.dates.outputs.dates }}
+    steps:
+      - name: 生成串行日期列表
+        id: dates
+        shell: bash
+        env:
+          RECOVERY_DATES: ${{ inputs.recovery_dates }}
+          TARGET_DATE: ${{ inputs.target_date }}
+        run: |
+          python - <<'PY'
+          import datetime
+          import json
+          import os
+          import re
+
+          raw = os.environ.get("RECOVERY_DATES", "").strip()
+          if raw:
+              dates = [item.strip() for item in raw.split(",") if item.strip()]
+          else:
+              target = os.environ.get("TARGET_DATE", "").strip()
+              if not target:
+                  target = (datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=8))).date() - datetime.timedelta(days=1)).isoformat()
+              dates = [target]
+          if not 1 <= len(dates) <= 7 or len(set(dates)) != len(dates):
+              raise SystemExit("恢复日期必须为1至7个且不能重复")
+          for value in dates:
+              if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", value) or datetime.date.fromisoformat(value).isoformat() != value:
+                  raise SystemExit(f"无效日期：{value}")
+          dates.sort()
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              output.write("dates=" + json.dumps(dates, separators=(",", ":")) + "\n")
+          PY
+
   run:
+    needs: prepare
     runs-on: ubuntu-latest
     timeout-minutes: 330
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        target_date: ${{ fromJSON(needs.prepare.outputs.dates) }}
     defaults:
       run:
         working-directory: wechat-growth-news
@@ -88,17 +134,11 @@ jobs:
       PYTHONUNBUFFERED: "1"
 
     steps:
-      - name: 确定目标日期
+      - name: 确定运行模式
         id: target
         shell: bash
         working-directory: .
         run: |
-          if [[ -n "${{ inputs.target_date }}" ]]; then
-            target_date="${{ inputs.target_date }}"
-          else
-            target_date="$(TZ=Asia/Shanghai date -d yesterday +%F)"
-          fi
-          echo "date=$target_date" >> "$GITHUB_OUTPUT"
           mode="daily"
           [[ "${{ inputs.dry_run }}" == "true" ]] && mode="dry"
           [[ "${{ inputs.collect_only }}" == "true" ]] && mode="collect"
@@ -110,7 +150,7 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: wechat-growth-news/.daily-complete
-          key: wechat-growth-complete-${{ steps.target.outputs.date }}
+          key: wechat-growth-complete-${{ matrix.target_date }}
 
       - name: 拉取代码
         if: ${{ inputs.bootstrap_feishu == true || inputs.feishu_check_only == true || inputs.force == true || steps.completed.outputs.cache-hit != 'true' }}
@@ -133,9 +173,9 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: wechat-growth-news/.state
-          key: wechat-growth-state-${{ steps.target.outputs.date }}-${{ steps.target.outputs.mode }}-${{ github.run_id }}
+          key: wechat-growth-state-${{ matrix.target_date }}-${{ steps.target.outputs.mode }}-${{ github.run_id }}
           restore-keys: |
-            wechat-growth-state-${{ steps.target.outputs.date }}-${{ steps.target.outputs.mode }}-
+            wechat-growth-state-${{ matrix.target_date }}-${{ steps.target.outputs.mode }}-
 
       - name: 单元测试
         if: ${{ inputs.bootstrap_feishu == true || inputs.feishu_check_only == true || inputs.force == true || steps.completed.outputs.cache-hit != 'true' }}
@@ -154,7 +194,7 @@ jobs:
             python main.py --check-feishu
             exit 0
           fi
-          args=(--date "${{ steps.target.outputs.date }}" --sources "${{ inputs.sources || 'all' }}" --trigger-source "${{ inputs.trigger_source || github.event_name }}")
+          args=(--date "${{ matrix.target_date }}" --sources "${{ inputs.sources || 'all' }}" --trigger-source "${{ inputs.trigger_source || github.event_name }}")
           [[ "${{ inputs.dry_run }}" == "true" ]] && args+=(--dry-run)
           [[ "${{ inputs.collect_only }}" == "true" ]] && args+=(--collect-only)
           [[ "${{ inputs.max_articles || '0' }}" != "0" ]] && args+=(--max-articles "${{ inputs.max_articles }}")
@@ -192,24 +232,24 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: wechat-growth-news/.state
-          key: wechat-growth-state-${{ steps.target.outputs.date }}-${{ steps.target.outputs.mode }}-${{ github.run_id }}
+          key: wechat-growth-state-${{ matrix.target_date }}-${{ steps.target.outputs.mode }}-${{ github.run_id }}
 
       - name: 生成当日完成标记
         if: ${{ steps.validate.outcome == 'success' }}
-        run: mkdir -p .daily-complete && touch ".daily-complete/${{ steps.target.outputs.date }}"
+        run: mkdir -p .daily-complete && touch ".daily-complete/${{ matrix.target_date }}"
 
       - name: 保存当日完成标记
         if: ${{ steps.validate.outcome == 'success' && steps.completed.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@v4
         with:
           path: wechat-growth-news/.daily-complete
-          key: wechat-growth-complete-${{ steps.target.outputs.date }}
+          key: wechat-growth-complete-${{ matrix.target_date }}
 
       - name: 保存运行报告
         if: ${{ always() && inputs.bootstrap_feishu != true && inputs.feishu_check_only != true }}
         uses: actions/upload-artifact@v4
         with:
-          name: wechat-run-report-${{ github.run_id }}
+          name: wechat-run-report-${{ github.run_id }}-${{ matrix.target_date }}
           path: wechat-growth-news/run-report.json
           if-no-files-found: warn
 

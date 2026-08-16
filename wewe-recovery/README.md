@@ -1,7 +1,8 @@
 # WeWeRSS 登录恢复监控
 
-每分钟只读检查 WeWeRSS SQLite 账号状态。检测到扫码恢复后，先通过本机 tRPC
-刷新指定公众号，再调用 Cloudflare 的受保护恢复入口补跑最近最多 7 天。
+每分钟只读检查 WeWeRSS SQLite 账号状态。账号连续两次显示启用后才认定扫码
+成功，再通过本机 tRPC 刷新指定公众号，并调用 Cloudflare 的受保护恢复入口
+串行补跑最近最多 7 天。短暂启用后立即失效的令牌不会启动 AI 任务。
 
 服务器运行文件位于 `/opt/wewe-rss/recovery`，敏感配置只保存在服务器的
 `recovery.env` 和 Cloudflare Secret 中，不进入仓库。

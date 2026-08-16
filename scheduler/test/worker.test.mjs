@@ -4,6 +4,7 @@ import test from "node:test";
 import worker, {
   GitHubApiError,
   ensureOldestMissingWorkflowRun,
+  ensureRecoveryWorkflowRun,
   ensureWorkflowRun,
   jobsForCron,
   previousShanghaiDate,
@@ -370,6 +371,51 @@ test("扫码恢复使用事件ID强制触发且与晨间运行隔离", async () 
     trigger_source: "wewe-login-login-20260814-abcd1234",
     force: "true",
   });
+});
+
+test("扫码恢复将多个日期合并为一个串行工作流", async () => {
+  const requests = [];
+  const fetchImpl = async (_url, init) => {
+    requests.push(init);
+    if (init.method === "POST") return new Response(null, { status: 204 });
+    const created = requests.some((item) => item.method === "POST");
+    return jsonResponse({ workflow_runs: created ? [{
+      id: 41,
+      display_title: "公众号每日资讯 · 2026-08-14,2026-08-15,2026-08-16 · wewe-login-login-20260816-abcd1234",
+      status: "queued",
+      conclusion: null,
+      created_at: new Date().toISOString(),
+    }] : [] });
+  };
+  const result = await ensureRecoveryWorkflowRun(env, {
+    eventId: "login-20260816-abcd1234",
+    targetDates: ["2026-08-16", "2026-08-14", "2026-08-15"],
+  }, noWaitOptions(fetchImpl));
+  assert.equal(result.action, "dispatch");
+  assert.deepEqual(result.targetDates, ["2026-08-14", "2026-08-15", "2026-08-16"]);
+  const posts = requests.filter((item) => item.method === "POST");
+  assert.equal(posts.length, 1);
+  assert.deepEqual(JSON.parse(posts[0].body).inputs, {
+    recovery_dates: "2026-08-14,2026-08-15,2026-08-16",
+    sources: "all",
+    trigger_source: "wewe-login-login-20260816-abcd1234",
+    force: "true",
+  });
+});
+
+test("同一扫码批次不会重复触发", async () => {
+  const fetchImpl = async () => jsonResponse({ workflow_runs: [{
+    id: 42,
+    display_title: "公众号每日资讯 · 2026-08-14,2026-08-15 · wewe-login-login-20260816-abcd1234",
+    status: "completed",
+    conclusion: "success",
+    created_at: new Date().toISOString(),
+  }] });
+  const result = await ensureRecoveryWorkflowRun(env, {
+    eventId: "login-20260816-abcd1234",
+    targetDates: ["2026-08-14", "2026-08-15"],
+  }, noWaitOptions(fetchImpl));
+  assert.equal(result.action, "skip_success");
 });
 
 test("同一扫码事件和日期不会重复触发", async () => {

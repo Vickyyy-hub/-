@@ -47,6 +47,7 @@ class Config:
     max_recovery_days: int = 7
     refresh_timeout_seconds: int = 1_200
     bootstrap_recent_login_seconds: int = 1_800
+    login_confirmation_polls: int = 2
     container_name: str = "wewe-rss"
 
     @classmethod
@@ -87,6 +88,7 @@ class Config:
             max_recovery_days=int(os.environ.get("MAX_RECOVERY_DAYS", "7")),
             refresh_timeout_seconds=int(os.environ.get("REFRESH_TIMEOUT_SECONDS", "1200")),
             bootstrap_recent_login_seconds=int(os.environ.get("BOOTSTRAP_RECENT_LOGIN_SECONDS", "1800")),
+            login_confirmation_polls=int(os.environ.get("LOGIN_CONFIRMATION_POLLS", "2")),
             container_name=os.environ.get("WEWE_CONTAINER_NAME", "wewe-rss"),
         )
 
@@ -256,6 +258,8 @@ def run_once(
     dispatch_fn: Callable[[Config, str, list[str]], None] = dispatch_recovery,
 ) -> str:
     current = (now or datetime.now(SHANGHAI)).astimezone(SHANGHAI)
+    if config.login_confirmation_polls < 2:
+        raise RecoveryError("LOGIN_CONFIRMATION_POLLS 必须至少为2")
     state = load_state(config.state_path)
     with open_database(config.database_path) as connection:
         account = account_snapshot(connection)
@@ -276,6 +280,9 @@ def run_once(
 
     if account["status"] != 1:
         state.setdefault("disabled_since_date", current.date().isoformat())
+        if pending and pending.get("phase") == "confirming":
+            pending["phase"] = "failed"
+            pending["error"] = "账号未通过连续启用确认；本次扫码令牌已失效"
         save_state(config.state_path, state)
         return "disabled"
 
@@ -286,14 +293,32 @@ def run_once(
     )
     is_login = previous_status == 0 or (previous_status == 1 and account["updated_at"] > previous_updated) or initial_recent
     current_event = event_id(account)
-    if not is_login or state.get("last_processed_event") == current_event:
+    pending = state.get("pending_event")
+    confirming = pending and pending.get("phase") == "confirming" and pending.get("id") == current_event
+    if confirming:
+        pending["confirmations"] = int(pending.get("confirmations") or 1) + 1
+        if pending["confirmations"] < config.login_confirmation_polls:
+            save_state(config.state_path, state)
+            return "awaiting_confirmation"
+        dates = list(pending["target_dates"])
+        pending["phase"] = "detected"
+        save_state(config.state_path, state)
+    elif not is_login or state.get("last_processed_event") == current_event:
         state.pop("disabled_since_date", None)
         save_state(config.state_path, state)
         return "no_change"
+    else:
+        dates = recovery_dates(state.get("disabled_since_date"), current.date(), config.max_recovery_days)
+        state["pending_event"] = {
+            "id": current_event,
+            "phase": "confirming",
+            "confirmations": 1,
+            "target_dates": dates,
+        }
+        save_state(config.state_path, state)
+        log("login_confirmation_pending", event_id=current_event, target_dates=dates)
+        return "awaiting_confirmation"
 
-    dates = recovery_dates(state.get("disabled_since_date"), current.date(), config.max_recovery_days)
-    state["pending_event"] = {"id": current_event, "phase": "detected", "target_dates": dates}
-    save_state(config.state_path, state)
     started_at = datetime.now(timezone.utc)
     try:
         with open_database(config.database_path) as connection:

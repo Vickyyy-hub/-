@@ -62,6 +62,8 @@ def test_invalid_to_enabled_refreshes_and_dispatches_once(tmp_path: Path) -> Non
     calls = []
     refresh = lambda _config, before, _started: calls.append(("refresh", before))
     dispatch = lambda _config, event, dates: calls.append(("dispatch", event, dates))
+    assert run_once(config, now=now, refresh_fn=refresh, dispatch_fn=dispatch) == "awaiting_confirmation"
+    assert calls == []
     assert run_once(config, now=now, refresh_fn=refresh, dispatch_fn=dispatch) == "dispatched"
     assert calls[0] == ("refresh", {"feed-a": 100, "feed-b": 200})
     assert calls[1][0] == "dispatch"
@@ -82,6 +84,12 @@ def test_enabled_updated_at_change_is_new_event(tmp_path: Path) -> None:
         now=now,
         refresh_fn=lambda *_: calls.append("refresh"),
         dispatch_fn=lambda *_: calls.append("dispatch"),
+    ) == "awaiting_confirmation"
+    assert run_once(
+        config,
+        now=now,
+        refresh_fn=lambda *_: calls.append("refresh"),
+        dispatch_fn=lambda *_: calls.append("dispatch"),
     ) == "dispatched"
     assert calls == ["refresh", "dispatch"]
 
@@ -96,6 +104,12 @@ def test_recent_initial_enabled_is_real_login_event(tmp_path: Path) -> None:
         now=now,
         refresh_fn=lambda *_: calls.append("refresh"),
         dispatch_fn=lambda *_: calls.append("dispatch"),
+    ) == "awaiting_confirmation"
+    assert run_once(
+        config,
+        now=now,
+        refresh_fn=lambda *_: calls.append("refresh"),
+        dispatch_fn=lambda *_: calls.append("dispatch"),
     ) == "dispatched"
     assert calls == ["refresh", "dispatch"]
 
@@ -105,6 +119,7 @@ def test_refresh_failure_waits_for_next_login(tmp_path: Path) -> None:
     now = datetime(2026, 8, 14, 11, 0, tzinfo=SHANGHAI)
     run_once(config, now=now)
     update_account(config, 1, int(now.timestamp() * 1000))
+    assert run_once(config, now=now) == "awaiting_confirmation"
     with pytest.raises(RecoveryError, match="401"):
         run_once(
             config,
@@ -122,6 +137,7 @@ def test_dispatch_failure_retries_without_second_refresh(tmp_path: Path) -> None
     now = datetime(2026, 8, 14, 11, 0, tzinfo=SHANGHAI)
     run_once(config, now=now)
     update_account(config, 1, int(now.timestamp() * 1000))
+    assert run_once(config, now=now) == "awaiting_confirmation"
     refresh_calls = []
     with pytest.raises(RecoveryError, match="Cloudflare"):
         run_once(
@@ -139,6 +155,32 @@ def test_dispatch_failure_retries_without_second_refresh(tmp_path: Path) -> None
     ) == "dispatched"
     assert refresh_calls == [1]
     assert dispatch_calls == [1]
+
+
+def test_transient_enabled_state_does_not_refresh_or_dispatch(tmp_path: Path) -> None:
+    config = make_config(tmp_path)
+    now = datetime(2026, 8, 14, 11, 0, tzinfo=SHANGHAI)
+    assert run_once(config, now=now) == "disabled"
+    updated_at = int(now.timestamp() * 1000)
+    update_account(config, 1, updated_at)
+    calls = []
+    assert run_once(
+        config,
+        now=now,
+        refresh_fn=lambda *_: calls.append("refresh"),
+        dispatch_fn=lambda *_: calls.append("dispatch"),
+    ) == "awaiting_confirmation"
+    update_account(config, 0, updated_at + 1_000)
+    assert run_once(
+        config,
+        now=now,
+        refresh_fn=lambda *_: calls.append("refresh"),
+        dispatch_fn=lambda *_: calls.append("dispatch"),
+    ) == "disabled"
+    assert calls == []
+    state = json.loads(config.state_path.read_text(encoding="utf-8"))
+    assert state["pending_event"]["phase"] == "failed"
+    assert "令牌已失效" in state["pending_event"]["error"]
 
 
 def test_event_id_does_not_expose_account_id() -> None:

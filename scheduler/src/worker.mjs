@@ -278,6 +278,27 @@ async function dispatchWorkflow(env, targetDate, task, options) {
   );
 }
 
+async function dispatchRecoveryWorkflow(env, recovery, task, options) {
+  const config = githubConfig(env, task);
+  await requestWithRetry(
+    workflowDispatchUrl(env, task),
+    {
+      method: "POST",
+      headers: githubHeaders(env.GITHUB_TOKEN),
+      body: JSON.stringify({
+        ref: config.ref,
+        inputs: {
+          recovery_dates: recovery.targetDates.join(","),
+          sources: "all",
+          trigger_source: config.spec.triggerSource,
+          force: "true",
+        },
+      }),
+    },
+    options,
+  );
+}
+
 async function waitForCreatedRun(env, targetDate, task, notBefore, options) {
   const sleep = options.sleep || sleepDefault;
   const delays = options.verifyDelaysMs || DEFAULT_VERIFY_DELAYS_MS;
@@ -341,6 +362,55 @@ export async function ensureWorkflowRun(env, targetDate, options = {}) {
     }
   }
   throw new Error(`GitHub已接收调度请求，但未查到 ${targetDate} 的新运行`);
+}
+
+export async function ensureRecoveryWorkflowRun(env, recovery, options = {}) {
+  if (!env.GITHUB_TOKEN) {
+    throw new Error("缺少Cloudflare Secret: GITHUB_TOKEN");
+  }
+  const eventId = validateEventId(recovery?.eventId);
+  const targetDates = (recovery?.targetDates || []).map(validateTargetDate);
+  if (targetDates.length < 1 || targetDates.length > 7 || new Set(targetDates).size !== targetDates.length) {
+    throw new Error("补抓日期必须为1至7个且不能重复");
+  }
+  targetDates.sort();
+  const task = { pipeline: "wechat", phase: "login_recovery", eventId };
+  const spec = taskSpec(env, task);
+  const targetLabel = targetDates.join(",");
+  const expiry = tokenExpiryStatus(env.GITHUB_TOKEN_EXPIRES_AT, options.now || new Date());
+  if (expiry.warning) {
+    console.warn(JSON.stringify({ event: "github_token_expiry_warning", ...expiry }));
+  }
+  const existing = selectMatchingRun(
+    await listWorkflowRuns(env, task, options),
+    targetLabel,
+    task,
+    env,
+  );
+  if (existing && existing.status !== "completed") {
+    return { action: "skip_active", targetDates, run: existing, expiry };
+  }
+  if (existing?.conclusion === "success") {
+    return { action: "skip_success", targetDates, run: existing, expiry };
+  }
+
+  for (let dispatchAttempt = 1; dispatchAttempt <= 2; dispatchAttempt += 1) {
+    const dispatchedAt = Date.now();
+    await dispatchRecoveryWorkflow(env, { eventId, targetDates }, task, options);
+    const created = await waitForCreatedRun(env, targetLabel, task, dispatchedAt, options);
+    if (created) {
+      return {
+        action: existing ? "resume" : "dispatch",
+        pipeline: spec.pipeline,
+        phase: spec.phase,
+        targetDates,
+        dispatchAttempt,
+        run: created,
+        expiry,
+      };
+    }
+  }
+  throw new Error(`GitHub已接收调度请求，但未查到 ${targetLabel} 的新恢复运行`);
 }
 
 export async function ensureOldestMissingWorkflowRun(env, now = new Date(), options = {}) {
@@ -497,20 +567,12 @@ export default {
           await request.json().catch(() => ({})),
           new Date(),
         );
-        const task = {
-          pipeline: "wechat",
-          phase: "login_recovery",
-          eventId: recovery.eventId,
-        };
-        const jobs = [];
-        for (const targetDate of recovery.targetDates) {
-          jobs.push(await ensureWorkflowRun(env, targetDate, { task }));
-        }
+        const job = await ensureRecoveryWorkflowRun(env, recovery);
         return jsonResponse({
           ok: true,
           event_id: recovery.eventId,
           target_dates: recovery.targetDates,
-          jobs,
+          job,
         });
       } catch (error) {
         console.error(JSON.stringify({

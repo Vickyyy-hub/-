@@ -5,7 +5,7 @@ import os
 import time
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Iterable
 
@@ -18,7 +18,7 @@ from .http import HttpClient
 from .models import Article, RunReport, SourceResult
 from .outputs import write_local_outputs
 from .state import StateStore
-from .text import clean_text, normalize_title, normalize_url
+from .text import SHANGHAI, clean_text, normalize_title, normalize_url
 
 
 class Pipeline:
@@ -54,7 +54,11 @@ class Pipeline:
         return results
 
     @staticmethod
-    def _mark_globally_stale(results: dict[str, SourceResult], day: date) -> None:
+    def _mark_globally_stale(
+        results: dict[str, SourceResult],
+        day: date,
+        current_day: date | None = None,
+    ) -> None:
         """Fail loudly when every healthy feed is older than the target day.
 
         Five independent publishers returning no target-day items while every
@@ -62,6 +66,8 @@ class Pipeline:
         WeRead login or a stalled WeWeRSS refresh.  A single current feed is
         enough to avoid the global alarm.
         """
+        if day >= (current_day or datetime.now(SHANGHAI).date()):
+            return
         if not results or any(result.errors or result.scanned == 0 for result in results.values()):
             return
         if any(result.discovered > 0 for result in results.values()):
