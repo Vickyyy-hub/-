@@ -1,0 +1,19 @@
+name = "cross-border-intelligence-scheduler"
+main = "src/worker.mjs"
+compatibility_date = "2026-08-13"
+workers_dev = true
+
+[observability]
+enabled = true
+head_sampling_rate = 1
+
+[triggers]
+crons = ["17 0 * * *", "47 1 * * *", "17 4 * * *", "47 4 * * *", "17 8 * * *", "17 12 * * *"]
+
+[vars]
+GITHUB_OWNER = "Vickyyy-hub"
+GITHUB_REPO = "-"
+GITHUB_WORKFLOW = "cross_border_intelligence.yml"
+GITHUB_REF = "main"
+GITHUB_RUN_PREFIX = "跨境市场情报"
+CROSS_BORDER_START_DATE = "2026-08-16"

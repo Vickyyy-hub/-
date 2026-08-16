@@ -66,6 +66,21 @@ function taskSpec(env, task = { pipeline: "website", phase: "daily" }) {
       force: false,
     };
   }
+  if (pipeline === "cross_border") {
+    const job = task.job || "all";
+    if (!["all", "sources", "policy", "demand", "weekly", "profiles"].includes(job)) {
+      throw new Error(`未知跨境任务：${job}`);
+    }
+    return {
+      pipeline,
+      phase: "daily",
+      job,
+      workflow: env.GITHUB_CROSS_BORDER_WORKFLOW || "cross_border_intelligence.yml",
+      triggerSource: "cloudflare",
+      titlePrefix: "跨境市场情报",
+      force: false,
+    };
+  }
   if (pipeline === "wechat" && phase === "login_recovery") {
     const eventId = validateEventId(task.eventId);
     return {
@@ -202,6 +217,9 @@ function workflowDispatchUrl(env, task) {
 
 function runTitle(env, targetDate, task) {
   const spec = taskSpec(env, task);
+  if (spec.pipeline === "cross_border") {
+    return `${spec.titlePrefix} · ${spec.job} · ${targetDate} · ${spec.triggerSource}`;
+  }
   return `${spec.titlePrefix} · ${targetDate} · ${spec.triggerSource}`;
 }
 
@@ -236,9 +254,13 @@ async function dispatchWorkflow(env, targetDate, task, options) {
   const config = githubConfig(env, task);
   const inputs = {
     target_date: targetDate,
-    sources: "all",
     trigger_source: config.spec.triggerSource,
   };
+  if (config.spec.pipeline === "cross_border") {
+    inputs.job = config.spec.job;
+  } else {
+    inputs.sources = "all";
+  }
   if (config.spec.force) {
     inputs.force = "true";
   }
@@ -325,7 +347,7 @@ export async function ensureOldestMissingWorkflowRun(env, now = new Date(), opti
   if (!env.GITHUB_TOKEN) {
     throw new Error("缺少Cloudflare Secret: GITHUB_TOKEN");
   }
-  const task = { pipeline: "website", phase: "daily" };
+  const task = options.task || { pipeline: "website", phase: "daily" };
   const spec = taskSpec(env, task);
   const runs = await listAllWorkflowRuns(env, task, options);
   const relevantRuns = runs.filter((run) =>
@@ -335,7 +357,8 @@ export async function ensureOldestMissingWorkflowRun(env, now = new Date(), opti
     return { action: "skip_active_global", run: active, lookbackDays: 7 };
   }
 
-  const dates = recentPreviousShanghaiDates(now, 7);
+  const startDate = task.pipeline === "cross_border" ? (env.CROSS_BORDER_START_DATE || "2026-08-16") : "0000-01-01";
+  const dates = recentPreviousShanghaiDates(now, 7).filter((date) => date >= startDate);
   const targetDate = dates.find((date) => {
     const expectedTitle = runTitle(env, date, task);
     return !relevantRuns.some((run) =>
@@ -361,6 +384,32 @@ export function jobsForCron(cron, now = new Date()) {
       recoveryLookbackDays: 7,
       scheduledAt: now,
     }];
+  }
+  const crossBorderJobs = {
+    "17 0 * * *": "policy",
+    "47 1 * * *": "demand",
+    "17 4 * * *": "policy",
+    "17 8 * * *": "policy",
+    "17 12 * * *": "policy",
+  };
+  if (crossBorderJobs[cron]) {
+    return [{
+      task: { pipeline: "cross_border", phase: "daily", job: crossBorderJobs[cron] },
+      targetDate: shanghaiDate(now),
+    }];
+  }
+  if (cron === "47 4 * * *") {
+    return [{
+      task: { pipeline: "cross_border", phase: "daily", job: "demand" },
+      recoveryLookbackDays: 7,
+      scheduledAt: now,
+    }];
+  }
+  if (cron === "17 2 * * 1") {
+    return [{ task: { pipeline: "cross_border", phase: "daily", job: "weekly" }, targetDate: shanghaiDate(now) }];
+  }
+  if (cron === "17 3 1 * *") {
+    return [{ task: { pipeline: "cross_border", phase: "daily", job: "profiles" }, targetDate: shanghaiDate(now) }];
   }
   throw new Error(`未配置的Cron：${cron}`);
 }
@@ -453,8 +502,9 @@ export default {
       const task = {
         pipeline: body.pipeline || "website",
         phase: body.phase || "daily",
+        job: body.job || "all",
       };
-      const defaultDate = previousShanghaiDate(new Date());
+      const defaultDate = task.pipeline === "cross_border" ? shanghaiDate(new Date()) : previousShanghaiDate(new Date());
       const targetDate = validateTargetDate(
         body.target_date || defaultDate,
       );

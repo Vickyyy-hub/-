@@ -8,11 +8,13 @@ enabled = true
 head_sampling_rate = 1
 
 [triggers]
-crons = ["7 0 * * *", "37 0 * * *", "7 1 * * *", "7 4 * * *"]
+crons = ["7 0 * * *", "37 0 * * *", "7 1 * * *", "7 4 * * *", "17 0 * * *", "47 1 * * *", "17 2 * * 1", "17 3 1 * *", "17 4 * * *", "47 4 * * *", "17 8 * * *", "17 12 * * *"]
 
 [vars]
 GITHUB_OWNER = "Vickyyy-hub"
 GITHUB_REPO = "-"
 GITHUB_WORKFLOW = "personal_growth.yml"
 GITHUB_WECHAT_WORKFLOW = "wechat_growth.yml"
+GITHUB_CROSS_BORDER_WORKFLOW = "cross_border_intelligence.yml"
 GITHUB_REF = "main"
+CROSS_BORDER_START_DATE = "2026-08-16"

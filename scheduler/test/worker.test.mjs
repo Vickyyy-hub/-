@@ -124,6 +124,29 @@ test("三个Cron都按上海前一日同时运行两条流水线", () => {
   }]);
 });
 
+test("跨境任务按上海当天分流且不与个人成长任务混淆", () => {
+  const now = new Date("2026-08-16T00:17:00Z");
+  assert.deepEqual(jobsForCron("17 0 * * *", now), [{
+    task: { pipeline: "cross_border", phase: "daily", job: "policy" },
+    targetDate: "2026-08-16",
+  }]);
+  assert.deepEqual(jobsForCron("47 1 * * *", now), [{
+    task: { pipeline: "cross_border", phase: "daily", job: "demand" },
+    targetDate: "2026-08-16",
+  }]);
+  const runs = [{
+    id: 9,
+    display_title: "跨境市场情报 · policy · 2026-08-16 · cloudflare",
+    created_at: "2026-08-16T00:17:01Z",
+  }];
+  assert.equal(selectMatchingRun(
+    runs,
+    "2026-08-16",
+    { pipeline: "cross_border", phase: "daily", job: "policy" },
+  ).id, 9);
+  assert.equal(selectMatchingRun(runs, "2026-08-16"), undefined);
+});
+
 test("午间追补在网站任务运行时不创建新任务", async () => {
   let postCount = 0;
   const fetchImpl = async (_url, init) => {

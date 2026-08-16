@@ -1,0 +1,7 @@
+{
+  "name": "news-intelligence-cloudflare-scheduler",
+  "private": true,
+  "type": "module",
+  "scripts": {"test": "node --test test/*.test.mjs"},
+  "devDependencies": {"wrangler": "^4.33.1"}
+}

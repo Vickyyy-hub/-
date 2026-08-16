@@ -1,0 +1,741 @@
+{
+  "project": {
+    "name": "欧洲与拉美跨境市场情报",
+    "timezone": "Asia/Shanghai"
+  },
+  "countries": {
+    "GB": {
+      "name_zh": "英国",
+      "region": "欧洲",
+      "language": "英语",
+      "currency": "GBP",
+      "timezone": "Europe/London",
+      "trends_geo": "GB",
+      "marketplace_site": "EBAY_GB"
+    },
+    "DE": {
+      "name_zh": "德国",
+      "region": "欧洲",
+      "language": "德语",
+      "currency": "EUR",
+      "timezone": "Europe/Berlin",
+      "trends_geo": "DE",
+      "marketplace_site": "EBAY_DE"
+    },
+    "FR": {
+      "name_zh": "法国",
+      "region": "欧洲",
+      "language": "法语",
+      "currency": "EUR",
+      "timezone": "Europe/Paris",
+      "trends_geo": "FR",
+      "marketplace_site": "EBAY_FR"
+    },
+    "ES": {
+      "name_zh": "西班牙",
+      "region": "欧洲",
+      "language": "西班牙语",
+      "currency": "EUR",
+      "timezone": "Europe/Madrid",
+      "trends_geo": "ES",
+      "marketplace_site": "EBAY_ES"
+    },
+    "BR": {
+      "name_zh": "巴西",
+      "region": "拉丁美洲",
+      "language": "葡萄牙语",
+      "currency": "BRL",
+      "timezone": "America/Sao_Paulo",
+      "trends_geo": "BR",
+      "marketplace_site": "MLB"
+    },
+    "MX": {
+      "name_zh": "墨西哥",
+      "region": "拉丁美洲",
+      "language": "西班牙语",
+      "currency": "MXN",
+      "timezone": "America/Mexico_City",
+      "trends_geo": "MX",
+      "marketplace_site": "MLM"
+    },
+    "CL": {
+      "name_zh": "智利",
+      "region": "拉丁美洲",
+      "language": "西班牙语",
+      "currency": "CLP",
+      "timezone": "America/Santiago",
+      "trends_geo": "CL",
+      "marketplace_site": "MLC"
+    },
+    "CO": {
+      "name_zh": "哥伦比亚",
+      "region": "拉丁美洲",
+      "language": "西班牙语",
+      "currency": "COP",
+      "timezone": "America/Bogota",
+      "trends_geo": "CO",
+      "marketplace_site": "MCO"
+    }
+  },
+  "sources": {
+    "wto": {
+      "name": "WTO 全球贸易新闻",
+      "url": "https://www.wto.org/library/rss/latest_news_e.xml",
+      "kind": "rss",
+      "cadence": "policy_4x",
+      "signal_type": "政策",
+      "countries": [
+        "GB",
+        "DE",
+        "FR",
+        "ES",
+        "BR",
+        "MX",
+        "CL",
+        "CO"
+      ],
+      "enabled": true,
+      "mode": "daily",
+      "priority_weight": 1
+    },
+    "federal_register": {
+      "name": "美国 Federal Register",
+      "url": "https://www.federalregister.gov/api/v1/documents.json",
+      "kind": "federal-register",
+      "cadence": "policy_4x",
+      "signal_type": "政策",
+      "countries": [],
+      "enabled": true,
+      "params": {
+        "agencies": [
+          "commerce-department",
+          "treasury-department",
+          "u-s-customs-and-border-protection",
+          "consumer-product-safety-commission"
+        ]
+      },
+      "mode": "daily",
+      "priority_weight": 1
+    },
+    "bis_notices": {
+      "name": "美国 BIS 出口管制公告",
+      "url": "https://media.bis.gov/regulations/federal-register-notices",
+      "kind": "html",
+      "cadence": "policy_4x",
+      "signal_type": "合规",
+      "countries": [],
+      "enabled": true,
+      "mode": "daily",
+      "priority_weight": 1
+    },
+    "ofac": {
+      "name": "美国 OFAC 制裁名单服务",
+      "url": "https://ofac.treasury.gov/sanctions-list-service",
+      "kind": "html",
+      "cadence": "policy_4x",
+      "signal_type": "制裁",
+      "countries": [],
+      "enabled": true,
+      "mode": "daily",
+      "priority_weight": 1
+    },
+    "eu_customs": {
+      "name": "欧盟海关与税务新闻",
+      "url": "https://taxation-customs.ec.europa.eu/news_en",
+      "kind": "html",
+      "cadence": "policy_4x",
+      "signal_type": "政策",
+      "countries": [
+        "DE",
+        "FR",
+        "ES"
+      ],
+      "enabled": true,
+      "mode": "daily",
+      "priority_weight": 1
+    },
+    "eu_trade": {
+      "name": "欧盟贸易与经济安全",
+      "url": "https://policy.trade.ec.europa.eu/news_en",
+      "kind": "html",
+      "cadence": "policy_4x",
+      "signal_type": "政策",
+      "countries": [
+        "DE",
+        "FR",
+        "ES"
+      ],
+      "enabled": true,
+      "mode": "daily",
+      "priority_weight": 1
+    },
+    "eur_lex": {
+      "name": "EUR-Lex 官方公报",
+      "url": "https://eur-lex.europa.eu/oj/direct-access.html",
+      "kind": "html",
+      "cadence": "policy_4x",
+      "signal_type": "法规",
+      "countries": [
+        "DE",
+        "FR",
+        "ES"
+      ],
+      "enabled": true,
+      "mode": "daily",
+      "priority_weight": 1
+    },
+    "safety_gate": {
+      "name": "EU Safety Gate",
+      "url": "https://ec.europa.eu/safety-gate-alerts/screen/webReport",
+      "kind": "html",
+      "cadence": "policy_4x",
+      "signal_type": "产品安全",
+      "countries": [
+        "DE",
+        "FR",
+        "ES"
+      ],
+      "enabled": true,
+      "mode": "daily",
+      "priority_weight": 1
+    },
+    "mercosur": {
+      "name": "MERCOSUR 新闻",
+      "url": "https://www.mercosur.int/en/news",
+      "kind": "html",
+      "cadence": "policy_4x",
+      "signal_type": "政策",
+      "countries": [
+        "BR"
+      ],
+      "enabled": true,
+      "mode": "daily",
+      "priority_weight": 1
+    },
+    "aladi": {
+      "name": "ALADI 公告",
+      "url": "https://www.aladi.org/category/publicaciones/",
+      "kind": "html",
+      "cadence": "policy_4x",
+      "signal_type": "政策",
+      "countries": [
+        "BR",
+        "MX",
+        "CL",
+        "CO"
+      ],
+      "enabled": true,
+      "mode": "daily",
+      "priority_weight": 1
+    },
+    "siscomex": {
+      "name": "巴西 Siscomex",
+      "url": "https://www.gov.br/siscomex/pt-br/noticias/RSS",
+      "kind": "rss",
+      "cadence": "policy_4x",
+      "signal_type": "海关",
+      "countries": [
+        "BR"
+      ],
+      "enabled": true,
+      "mode": "daily",
+      "priority_weight": 1
+    },
+    "snice": {
+      "name": "墨西哥 SNICE",
+      "url": "https://www.snice.gob.mx/cs/avi/snice/home.html",
+      "kind": "html",
+      "cadence": "policy_4x",
+      "signal_type": "海关",
+      "countries": [
+        "MX"
+      ],
+      "enabled": true,
+      "mode": "daily",
+      "priority_weight": 1
+    },
+    "anam": {
+      "name": "墨西哥 ANAM",
+      "url": "https://www.anam.gob.mx/comunicados-de-prensa-2026/",
+      "kind": "html",
+      "cadence": "policy_4x",
+      "signal_type": "海关",
+      "countries": [
+        "MX"
+      ],
+      "enabled": true,
+      "mode": "daily",
+      "priority_weight": 1
+    },
+    "chile_customs": {
+      "name": "智利海关",
+      "url": "https://www.aduana.cl/aduana/site/tax/port/all/taxport_44___33.html",
+      "kind": "html",
+      "cadence": "policy_4x",
+      "signal_type": "海关",
+      "countries": [
+        "CL"
+      ],
+      "enabled": true,
+      "mode": "daily",
+      "priority_weight": 1
+    },
+    "dian": {
+      "name": "哥伦比亚 DIAN",
+      "url": "https://www.dian.gov.co/Prensa/Paginas/HistoricoComunicadosPrensa.aspx",
+      "kind": "html",
+      "cadence": "policy_4x",
+      "signal_type": "海关",
+      "countries": [
+        "CO"
+      ],
+      "enabled": true,
+      "mode": "daily",
+      "priority_weight": 1
+    },
+    "shopify": {
+      "name": "Shopify Changelog",
+      "url": "https://changelog.shopify.com/feed",
+      "kind": "rss",
+      "cadence": "policy_4x",
+      "signal_type": "平台公告",
+      "countries": [
+        "GB",
+        "DE",
+        "FR",
+        "ES",
+        "BR",
+        "MX",
+        "CL",
+        "CO"
+      ],
+      "enabled": true,
+      "mode": "daily",
+      "priority_weight": 1
+    },
+    "google_trends": {
+      "name": "Google Trends 每日热搜",
+      "url": "https://trends.google.com/trending/rss?geo={geo}",
+      "kind": "google-trends",
+      "cadence": "demand_daily",
+      "signal_type": "搜索趋势",
+      "countries": [
+        "GB",
+        "DE",
+        "FR",
+        "ES",
+        "BR",
+        "MX",
+        "CL",
+        "CO"
+      ],
+      "enabled": true,
+      "notes": "公开Trending RSS；若获得Alpha API权限再切换API",
+      "mode": "daily",
+      "priority_weight": 1
+    },
+    "mercadolibre": {
+      "name": "Mercado Libre 热门搜索",
+      "url": "https://api.mercadolibre.com/trends/{site}",
+      "kind": "mercadolibre",
+      "cadence": "demand_daily",
+      "signal_type": "电商趋势",
+      "countries": [
+        "BR",
+        "MX",
+        "CL",
+        "CO"
+      ],
+      "enabled": true,
+      "optional": true,
+      "auth_env": "MERCADOLIBRE_ACCESS_TOKEN",
+      "notes": "当前匿名请求会被策略拦截，需官方访问令牌",
+      "mode": "daily",
+      "priority_weight": 1
+    },
+    "reddit": {
+      "name": "Reddit 本地消费讨论",
+      "url": "agent-reach://reddit",
+      "kind": "html",
+      "cadence": "demand_daily",
+      "signal_type": "社媒话题",
+      "countries": [
+        "GB",
+        "DE",
+        "FR",
+        "ES",
+        "BR",
+        "MX",
+        "CL",
+        "CO"
+      ],
+      "enabled": false,
+      "optional": true,
+      "auth_env": "REDDIT_SESSION",
+      "notes": "当前agent-reach doctor显示无可用后端，授权后再启用",
+      "mode": "diagnostic_only",
+      "priority_weight": 1
+    },
+    "youtube": {
+      "name": "YouTube 产品话题",
+      "url": "https://www.googleapis.com/youtube/v3/search",
+      "kind": "html",
+      "cadence": "demand_daily",
+      "signal_type": "社媒话题",
+      "countries": [
+        "GB",
+        "DE",
+        "FR",
+        "ES",
+        "BR",
+        "MX",
+        "CL",
+        "CO"
+      ],
+      "enabled": false,
+      "optional": true,
+      "auth_env": "YOUTUBE_API_KEY",
+      "notes": "需配置本地语言种子词后启用",
+      "mode": "diagnostic_only",
+      "priority_weight": 1
+    },
+    "bis_data": {
+      "name": "BIS 数据更新",
+      "url": "https://data.bis.org/feed.xml",
+      "kind": "rss",
+      "cadence": "data_weekly",
+      "signal_type": "数据更新",
+      "countries": [
+        "GB",
+        "DE",
+        "FR",
+        "ES",
+        "BR",
+        "MX",
+        "CL",
+        "CO"
+      ],
+      "enabled": true,
+      "mode": "daily",
+      "priority_weight": 1
+    },
+    "ecb": {
+      "name": "ECB 新闻与汇率",
+      "url": "https://www.ecb.europa.eu/rss/press.html",
+      "kind": "rss",
+      "cadence": "data_weekly",
+      "signal_type": "数据更新",
+      "countries": [
+        "DE",
+        "FR",
+        "ES"
+      ],
+      "enabled": true,
+      "mode": "daily",
+      "priority_weight": 1
+    },
+    "ons_profile": {
+      "name": "英国 ONS 零售与网络销售",
+      "url": "https://www.ons.gov.uk/businessindustryandtrade/retailindustry/bulletins/retailsales/latest",
+      "kind": "reference",
+      "cadence": "profile_monthly",
+      "signal_type": "消费画像证据",
+      "countries": [
+        "GB"
+      ],
+      "enabled": true,
+      "mode": "daily",
+      "priority_weight": 1
+    },
+    "eurostat_profile": {
+      "name": "Eurostat 消费与零售",
+      "url": "https://ec.europa.eu/eurostat/web/main/data/database",
+      "kind": "reference",
+      "cadence": "profile_monthly",
+      "signal_type": "消费画像证据",
+      "countries": [
+        "DE",
+        "FR",
+        "ES"
+      ],
+      "enabled": true,
+      "mode": "daily",
+      "priority_weight": 1
+    },
+    "insee_profile": {
+      "name": "法国 INSEE 家庭消费",
+      "url": "https://www.insee.fr/en/statistiques/8988884",
+      "kind": "reference",
+      "cadence": "profile_monthly",
+      "signal_type": "消费画像证据",
+      "countries": [
+        "FR"
+      ],
+      "enabled": true,
+      "mode": "daily",
+      "priority_weight": 1
+    },
+    "ibge_profile": {
+      "name": "巴西 IBGE 消费与零售",
+      "url": "https://www.ibge.gov.br/estatisticas/sociais/rendimento-despesa-e-consumo.html",
+      "kind": "reference",
+      "cadence": "profile_monthly",
+      "signal_type": "消费画像证据",
+      "countries": [
+        "BR"
+      ],
+      "enabled": true,
+      "mode": "daily",
+      "priority_weight": 1
+    },
+    "inegi_profile": {
+      "name": "墨西哥 INEGI 消费",
+      "url": "https://www.inegi.org.mx/temas/imcp/",
+      "kind": "reference",
+      "cadence": "profile_monthly",
+      "signal_type": "消费画像证据",
+      "countries": [
+        "MX"
+      ],
+      "enabled": true,
+      "mode": "daily",
+      "priority_weight": 1
+    },
+    "ine_chile_profile": {
+      "name": "智利 INE 家庭预算",
+      "url": "https://www.ine.gob.cl/estadisticas-por-tema/sociedad-y-condiciones-de-vida/encuesta-de-presupuestos-familiares",
+      "kind": "reference",
+      "cadence": "profile_monthly",
+      "signal_type": "消费画像证据",
+      "countries": [
+        "CL"
+      ],
+      "enabled": true,
+      "mode": "daily",
+      "priority_weight": 1
+    },
+    "dane_profile": {
+      "name": "哥伦比亚 DANE 消费",
+      "url": "https://www.dane.gov.co/index.php/estadisticas-por-tema/comercio-interno",
+      "kind": "reference",
+      "cadence": "profile_monthly",
+      "signal_type": "消费画像证据",
+      "countries": [
+        "CO"
+      ],
+      "enabled": true,
+      "mode": "daily",
+      "priority_weight": 1
+    },
+    "uk_tariff_updates": {
+      "name": "英国 Trade Tariff 服务更新",
+      "url": "https://www.trade-tariff.service.gov.uk/news/collections/service_updates",
+      "kind": "html",
+      "cadence": "policy_4x",
+      "signal_type": "关税",
+      "countries": [
+        "GB"
+      ],
+      "enabled": true,
+      "mode": "daily",
+      "priority_weight": 1
+    },
+    "uk_tariff_api": {
+      "name": "英国 Trade Tariff API",
+      "url": "https://www.api.gov.uk/hmrc/gov-uk-trade-tariff-api/",
+      "kind": "reference",
+      "cadence": "data_weekly",
+      "signal_type": "数据更新",
+      "countries": [
+        "GB"
+      ],
+      "enabled": true,
+      "notes": "首期监控接口与数据版本更新，不执行未配置商品编码的查询",
+      "mode": "daily",
+      "priority_weight": 1
+    },
+    "un_comtrade": {
+      "name": "UN Comtrade API",
+      "url": "https://uncomtrade.org/docs/un-comtrade-api/",
+      "kind": "reference",
+      "cadence": "data_weekly",
+      "signal_type": "数据更新",
+      "countries": [
+        "GB",
+        "DE",
+        "FR",
+        "ES",
+        "BR",
+        "MX",
+        "CL",
+        "CO"
+      ],
+      "enabled": true,
+      "notes": "首期监控数据发布与接口变化",
+      "mode": "daily",
+      "priority_weight": 1
+    },
+    "eurostat_data": {
+      "name": "Eurostat/Comext API",
+      "url": "https://ec.europa.eu/eurostat/data/web-services",
+      "kind": "reference",
+      "cadence": "data_weekly",
+      "signal_type": "数据更新",
+      "countries": [
+        "DE",
+        "FR",
+        "ES"
+      ],
+      "enabled": true,
+      "notes": "首期监控数据发布与接口变化",
+      "mode": "daily",
+      "priority_weight": 1
+    },
+    "imo": {
+      "name": "国际海事组织 IMO",
+      "url": "https://www.imo.org/en/MediaCentre/Pages/Default.aspx",
+      "kind": "html",
+      "cadence": "policy_4x",
+      "signal_type": "物流规则",
+      "countries": [
+        "GB",
+        "DE",
+        "FR",
+        "ES",
+        "BR",
+        "MX",
+        "CL",
+        "CO"
+      ],
+      "enabled": true,
+      "notes": "官方RSS旧入口当前失效，使用官方媒体中心低频增量监控",
+      "mode": "daily",
+      "priority_weight": 1
+    },
+    "port_la": {
+      "name": "洛杉矶港统计",
+      "url": "https://portoflosangeles.org/business/statistics/container-statistics",
+      "kind": "reference",
+      "cadence": "data_weekly",
+      "signal_type": "物流数据",
+      "countries": [
+        "GB",
+        "DE",
+        "FR",
+        "ES",
+        "BR",
+        "MX",
+        "CL",
+        "CO"
+      ],
+      "enabled": true,
+      "mode": "daily",
+      "priority_weight": 1
+    },
+    "amazon_announcements": {
+      "name": "Amazon Seller Forums 官方公告",
+      "url": "https://sellercentral.amazon.com/seller-forums/",
+      "kind": "html",
+      "cadence": "policy_4x",
+      "signal_type": "平台公告",
+      "countries": [
+        "GB",
+        "DE",
+        "FR",
+        "ES",
+        "BR",
+        "MX"
+      ],
+      "enabled": true,
+      "notes": "仅筛选可公开访问且带真实日期的官方公告",
+      "mode": "daily",
+      "priority_weight": 1
+    },
+    "google_merchant": {
+      "name": "Google Merchant Center 更新日志",
+      "url": "https://support.google.com/merchants/announcements/6192467?hl=en",
+      "kind": "html",
+      "cadence": "policy_4x",
+      "signal_type": "平台公告",
+      "countries": [
+        "GB",
+        "DE",
+        "FR",
+        "ES",
+        "BR",
+        "MX",
+        "CL",
+        "CO"
+      ],
+      "enabled": true,
+      "mode": "daily",
+      "priority_weight": 1
+    },
+    "ebay_browse": {
+      "name": "eBay Browse API",
+      "url": "https://api.ebay.com/buy/browse/v1/item_summary/search",
+      "kind": "html",
+      "cadence": "demand_daily",
+      "signal_type": "电商趋势",
+      "countries": [
+        "GB",
+        "DE",
+        "FR",
+        "ES"
+      ],
+      "enabled": false,
+      "optional": true,
+      "auth_env": "EBAY_ACCESS_TOKEN",
+      "notes": "Browse API是搜索接口而非热门榜；需先确定品类/关键词种子后启用，避免把搜索结果伪装成趋势",
+      "mode": "diagnostic_only",
+      "priority_weight": 1
+    }
+  },
+  "model": {
+    "provider": "volcengine_responses",
+    "base_url": "https://ark.cn-beijing.volces.com/api/v3/responses",
+    "model": "doubao-seed-2-0-mini-260215",
+    "api_key_env": "ARK_API_KEY"
+  },
+  "product_directions": {
+    "lookback_days": 30,
+    "minimum_source_types": 2,
+    "maximum_per_country": 5
+  },
+  "outputs": {
+    "feishu": {
+      "enabled": true,
+      "progressive_write_interval_minutes": 60,
+      "table_prefix": "跨境-"
+    },
+    "json": {
+      "enabled": true,
+      "directory": "output"
+    },
+    "csv": {
+      "enabled": true,
+      "directory": "output"
+    }
+  },
+  "schedule": {
+    "policy_cron": "0 0,4,8,12 * * *",
+    "demand_cron": "30 1 * * *",
+    "weekly_cron": "0 2 * * 1",
+    "profile_cron": "0 3 1 * *",
+    "github_cron": [
+      "0 0,4,8,12 * * *",
+      "30 1 * * *",
+      "0 2 * * 1",
+      "0 3 1 * *"
+    ],
+    "primary_scheduler": "cloudflare",
+    "external_scheduler_enabled": true,
+    "external_times": ["08:17", "09:47", "12:17", "12:47", "16:17", "20:17"]
+  },
+  "summary": {
+    "minimum_chars": 80,
+    "maximum_chars": 300,
+    "target_minimum_chars": 100,
+    "target_maximum_chars": 220
+  }
+}
