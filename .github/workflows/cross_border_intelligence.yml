@@ -38,6 +38,10 @@ on:
         required: false
         default: false
         type: boolean
+      reset_feishu_news:
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -103,10 +107,11 @@ jobs:
           if [[ "${{ inputs.check_feishu }}" == "true" ]]; then args=(--check-feishu); fi
           if [[ "${{ inputs.setup_feishu }}" == "true" ]]; then args=(--setup-feishu); fi
           if [[ "${{ inputs.delete_legacy_feishu }}" == "true" ]]; then args=(--delete-legacy-feishu); fi
+          if [[ "${{ inputs.reset_feishu_news }}" == "true" ]]; then args=(--reset-feishu-news); fi
           python main.py "${args[@]}"
       - name: 验证完整日报
         id: validate
-        if: ${{ !inputs.check_feishu && !inputs.setup_feishu && !inputs.delete_legacy_feishu && !inputs.dry_run && !inputs.collect_only }}
+        if: ${{ !inputs.check_feishu && !inputs.setup_feishu && !inputs.delete_legacy_feishu && !inputs.reset_feishu_news && !inputs.dry_run && !inputs.collect_only }}
         run: |
           python - <<'PY'
           import json

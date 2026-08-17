@@ -217,3 +217,9 @@ class MarketPipeline:
         if feishu is None:
             raise RuntimeError("飞书输出未启用")
         return feishu.delete_legacy_tables()
+
+    def reset_feishu_news(self) -> dict[str, Any]:
+        feishu = self._feishu(read_only=False)
+        if feishu is None:
+            raise RuntimeError("飞书输出未启用")
+        return feishu.reset_news_table()

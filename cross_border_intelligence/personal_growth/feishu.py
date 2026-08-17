@@ -127,6 +127,7 @@ class FeishuMarketBase:
         return {
             "readable": True, "ready": bool(self.table_id) and not self.field_issues,
             "table": {"name": NEWS_TABLE["name"], "table_id": self.table_id, "fields": len(NEWS_TABLE["fields"])},
+            "record_count": len(self._records()) if self.table_id else 0,
             "field_issues": self.field_issues,
             "legacy_tables": {name: tables[name] for name in LEGACY_TABLE_NAMES if name in tables},
         }
@@ -238,6 +239,16 @@ class FeishuMarketBase:
         if any(name in remaining for name in deleted):
             raise RuntimeError("旧跨境表删除后回读仍存在")
         return deleted
+
+    def reset_news_table(self) -> dict[str, Any]:
+        if not self.table_id:
+            return {"deleted": False, "name": NEWS_TABLE["name"], "records": 0}
+        records = len(self._records())
+        self._api("DELETE", f"/bitable/v1/apps/{self.app_token}/tables/{self.table_id}")
+        remaining = {str(item.get("name")) for item in self._list_tables()}
+        if NEWS_TABLE["name"] in remaining:
+            raise RuntimeError("跨境资讯成品表删除后回读仍存在")
+        return {"deleted": True, "name": NEWS_TABLE["name"], "table_id": self.table_id, "records": records}
 
 
 def signal_rows(items: list[dict[str, Any]], daily_date: str | None = None) -> list[dict[str, Any]]:

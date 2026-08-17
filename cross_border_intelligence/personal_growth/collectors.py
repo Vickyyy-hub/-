@@ -64,6 +64,15 @@ def _likely_cross_border_policy(title: str, abstract: str) -> bool:
     return any(term in text for term in terms)
 
 
+def _is_challenge_page(text: str) -> bool:
+    compact = text.casefold()
+    markers = (
+        "captcha", "verify you are human", "automated access", "疑似自动化访问",
+        "just a moment", "cloudflare ray id", "security check", "访问验证",
+    )
+    return any(marker in compact for marker in markers)
+
+
 class Collector:
     def __init__(self, http: HttpClient, country_map: dict[str, Country]) -> None:
         self.http = http
@@ -103,6 +112,8 @@ class Collector:
             body = html_to_text(raw, selector)
             if len(re.sub(r"\s+", "", body)) < 300:
                 body = html_to_text(raw, "main, article, [role='main'], body")
+            if _is_challenge_page(body):
+                body = ""
         except Exception:
             body = ""
         if len(re.sub(r"\s+", "", body)) < 300:
@@ -110,6 +121,8 @@ class Collector:
                 raw = self.http.get(f"https://r.jina.ai/{url}").text
                 marker = "Markdown Content:"
                 body = clean_text(raw.split(marker, 1)[-1] if marker in raw else raw)
+                if _is_challenge_page(body):
+                    body = ""
                 if published is None:
                     match = re.search(r"(?:Published|发布日期|Date)\s*:?\s*(20\d{2}[-/.]\d{1,2}[-/.]\d{1,2})", raw, re.I)
                     if match:

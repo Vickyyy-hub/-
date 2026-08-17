@@ -19,6 +19,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--check-feishu", action="store_true", help="只读校验跨境资讯成品表及字段")
     parser.add_argument("--setup-feishu", action="store_true", help="按名称创建或补齐跨境资讯成品表")
     parser.add_argument("--delete-legacy-feishu", action="store_true", help="新表验收后删除四张旧跨境表")
+    parser.add_argument("--reset-feishu-news", action="store_true", help="删除未验收的跨境资讯成品表")
     parser.add_argument("--trigger-source", default=os.environ.get("TRIGGER_SOURCE", "manual"))
     return parser.parse_args()
 
@@ -44,6 +45,9 @@ def main() -> int:
         return 0
     if args.delete_legacy_feishu:
         print(json.dumps({"deleted": pipeline.delete_legacy_feishu()}, ensure_ascii=False, indent=2))
+        return 0
+    if args.reset_feishu_news:
+        print(json.dumps({"reset": pipeline.reset_feishu_news()}, ensure_ascii=False, indent=2))
         return 0
     target = date.fromisoformat(args.date) if args.date else datetime.now(SHANGHAI).date()
     job = resolve_job(args.job, args.schedule)

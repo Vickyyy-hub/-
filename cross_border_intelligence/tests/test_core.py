@@ -61,6 +61,15 @@ def test_article_body_rejects_unverifiable_page():
     assert Collector(Http(), countries())._article_body("https://example.com/detail")[0] == ""
 
 
+def test_article_body_rejects_captcha_even_when_long():
+    class Http:
+        @staticmethod
+        def get(url):
+            return Response(text=("Verify you are human. CAPTCHA required for automated access. " * 20))
+
+    assert Collector(Http(), countries())._article_body("https://example.com/detail")[0] == ""
+
+
 def test_article_detail_reads_real_published_time():
     class Http:
         @staticmethod
