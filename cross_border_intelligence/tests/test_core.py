@@ -115,6 +115,7 @@ def test_summary_validation_checks_length_and_evidence_numbers():
     assert not analyzer._summary_valid(signal, "太短")
     assert not analyzer._summary_valid(signal, valid.replace("8%", "7%"))
     assert not analyzer._summary_valid(signal, valid.replace("卖家需要", "这是重大利好，卖家需要"))
+    assert not analyzer._summary_valid(signal, valid.replace("卖家需要重新核算申报成本、更新商品定价及清关资料", "相关信息可通过官方渠道查阅"))
 
 
 def test_feishu_schema_and_clickable_link_shape():

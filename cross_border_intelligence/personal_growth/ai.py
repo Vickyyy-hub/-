@@ -17,7 +17,7 @@ from .text import clean_text, parse_json_object
 
 # Template-validator compatibility and explicit cache/prompt versioning.
 FILTER_VERSION = "cross_filter_v2"
-SUMMARY_VERSION = "cross_summary_v4"
+SUMMARY_VERSION = "cross_summary_v5"
 UNSUPPORTED_PLACEHOLDERS = '禁止在摘要中使用“相关时间”或“相关数值”等占位表达。'
 # Validator marker mirrors the rejection rule: 相关时间" in summary or "相关数值
 
@@ -276,6 +276,9 @@ class MarketAnalyzer:
         subjective = next((value for value in ("政策利好", "重大利好", "利空", "高利润", "巨大商机") if value in summary), "")
         if subjective:
             return f"包含证据外判断：{subjective}"
+        impact_terms = ("卖家", "进口商", "出口商", "平台", "消费者", "供应链", "清关", "关税", "合规", "成本", "物流", "报关", "申报", "运营")
+        if not any(value in summary for value in impact_terms):
+            return "未说明对跨境经营主体的直接影响"
         evidence_numbers = self._numbers(signal.title + "\n" + signal.published_at.isoformat() + "\n" + signal.evidence)
         unsupported = self._numbers(summary) - evidence_numbers
         return f"出现正文外数字：{sorted(unsupported)}" if unsupported else ""
