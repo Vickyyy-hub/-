@@ -202,6 +202,9 @@ class MarketAnalyzer:
             for signal in batch:
                 item = mapped.get(signal.signal_id)
                 if not item or item.get("selected") is not True:
+                    signal.meta["filter_version"] = FILTER_VERSION
+                    signal.meta["summary_version"] = SUMMARY_VERSION
+                    signal.meta["ai_status"] = "rejected"
                     continue
                 signal.keyword_zh = clean_text(str(item.get("keyword_zh", "")))[:100]
                 topic = clean_text(str(item.get("topic", "")))
@@ -216,10 +219,14 @@ class MarketAnalyzer:
                 if reason:
                     self.summary_rejected += 1
                     self.warnings.append(f"摘要两次校验不合格，已跳过：{signal.title}（{reason}）")
+                    signal.meta["filter_version"] = FILTER_VERSION
+                    signal.meta["summary_version"] = SUMMARY_VERSION
+                    signal.meta["ai_status"] = "rejected"
                     continue
                 signal.summary_zh = summary
                 signal.meta["filter_version"] = FILTER_VERSION
                 signal.meta["summary_version"] = SUMMARY_VERSION
+                signal.meta["ai_status"] = "selected"
                 selected.append(signal)
             return selected
         except ArkContentSafetyError as exc:

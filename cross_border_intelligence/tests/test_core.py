@@ -156,6 +156,12 @@ def test_completed_demand_job_adds_zero(tmp_path, monkeypatch):
     assert report.written == 0 and report.updated == 0 and report.completion_marker
 
 
+def test_rejected_ai_decision_is_cacheable():
+    assert MarketPipeline._valid_cached_rejection({"meta": {
+        "filter_version": "cross_filter_v2", "summary_version": "cross_summary_v5", "ai_status": "rejected",
+    }})
+
+
 def test_cron_job_routing():
     assert resolve_job("auto", "0 0,4,8,12 * * *") == "policy"
     assert resolve_job("auto", "0 1 * * *") == "demand"

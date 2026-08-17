@@ -87,6 +87,16 @@ class MarketPipeline:
             and bool(item.get("topics"))
             and meta.get("filter_version") == FILTER_VERSION
             and meta.get("summary_version") == SUMMARY_VERSION
+            and meta.get("ai_status") == "selected"
+        )
+
+    @staticmethod
+    def _valid_cached_rejection(item: dict[str, Any]) -> bool:
+        meta = item.get("meta") or {}
+        return (
+            meta.get("filter_version") == FILTER_VERSION
+            and meta.get("summary_version") == SUMMARY_VERSION
+            and meta.get("ai_status") == "rejected"
         )
 
     def run_signals(self, day: date, report: MarketRunReport, *, cadence: str,
@@ -110,7 +120,11 @@ class MarketPipeline:
                 signal.summary_zh = previous.get("summary_zh", "")
                 signal.ai_conclusion = previous.get("ai_conclusion", "")
                 signal.topics = list(previous.get("topics") or [])
+                signal.meta = dict(previous.get("meta") or {})
                 ready.append(signal)
+                report.cache_hits += 1
+            elif self._valid_cached_rejection(previous):
+                signal.meta = dict(previous.get("meta") or {})
                 report.cache_hits += 1
             else:
                 pending.append(signal)
@@ -150,7 +164,7 @@ class MarketPipeline:
         report.pending_articles = 0
         state = MarketStore()
         try:
-            inserted, duplicates = state.upsert_signals(ready)
+            inserted, duplicates = state.upsert_signals(signals)
         finally:
             state.close()
         report.stored += inserted
