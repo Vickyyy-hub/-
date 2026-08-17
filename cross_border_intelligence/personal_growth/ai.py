@@ -193,14 +193,18 @@ class MarketAnalyzer:
                 if not item or item.get("selected") is not True:
                     continue
                 signal.keyword_zh = clean_text(str(item.get("keyword_zh", "")))[:100]
-                signal.topics = [clean_text(str(item.get("topic", "跨境资讯")))[:30]]
-                signal.ai_conclusion = clean_text(str(item.get("section", "跨境资讯")))[:30]
-                summary = self._summarize(signal, correction=False)
-                if not self._summary_valid(signal, summary):
-                    summary = self._summarize(signal, correction=True)
-                if not self._summary_valid(signal, summary):
+                topic = clean_text(str(item.get("topic", "")))
+                section = clean_text(str(item.get("section", "")))
+                signal.topics = [topic if topic in {"政策合规", "海关贸易", "产品安全", "平台动态", "消费需求", "供应链"} else signal.signal_type]
+                signal.ai_conclusion = section if section in {"欧洲市场", "拉美市场", "全球政策", "平台与需求"} else "全球政策"
+                summary = self._summarize(signal)
+                reason = self._summary_invalid_reason(signal, summary)
+                if reason:
+                    summary = self._summarize(signal, previous=summary, reason=reason)
+                    reason = self._summary_invalid_reason(signal, summary)
+                if reason:
                     self.summary_rejected += 1
-                    self.warnings.append(f"摘要两次校验不合格，已跳过：{signal.title}")
+                    self.warnings.append(f"摘要两次校验不合格，已跳过：{signal.title}（{reason}）")
                     continue
                 signal.summary_zh = summary
                 selected.append(signal)
@@ -223,15 +227,16 @@ class MarketAnalyzer:
             self.warnings.append(f"AI格式无效，已跳过：{batch[0].title} ({exc})")
         return []
 
-    def _summarize(self, signal: Signal, *, correction: bool) -> str:
-        instruction = (
-            "上次摘要未通过长度或证据校验，请重新写。" if correction else "请生成成品摘要。"
-        )
+    def _summarize(self, signal: Signal, *, previous: str = "", reason: str = "") -> str:
+        instruction = "请生成成品摘要。"
+        if previous:
+            instruction = f"上次摘要未通过校验（{reason}）：{previous}\n请针对问题重写，不能复述原结果。"
         raw = self._request(
             "你是跨境商业资讯编辑。只依据所给文章正文，写一段中文核心干货，80至150个可见字符，"
             "目标约100字，不换行。依次交代：谁在何时做了什么或发生何变化；关键政策、数据、产品或"
             "市场信息；对跨境卖家、平台、消费者或供应链的直接影响。禁止标题改写、空话、猜测、"
-            "证据外数字和虚构结论。正文没写日期时不要编日期。只输出JSON。",
+            "证据外数字和虚构结论。影响必须由正文明确支持；不能为了凑结构添加笼统的‘将影响跨境供应链’。"
+            "正文没写日期时不要编日期。只输出JSON。",
             instruction + "\n" + json.dumps({
                 "id": signal.signal_id, "title": signal.title,
                 "published_at": signal.published_at.isoformat(),
@@ -245,11 +250,19 @@ class MarketAnalyzer:
             return ""
 
     def _summary_valid(self, signal: Signal, summary: str) -> bool:
+        return not self._summary_invalid_reason(signal, summary)
+
+    def _summary_invalid_reason(self, signal: Signal, summary: str) -> str:
         length = self._visible_length(summary)
-        if not 80 <= length <= 150 or "\n" in summary or any(value in summary for value in ("相关时间", "相关数值")):
-            return False
+        if not 80 <= length <= 150:
+            return f"可见字符{length}，要求80至150"
+        if "\n" in summary:
+            return "必须是一段"
+        if any(value in summary for value in ("相关时间", "相关数值")):
+            return "包含占位表达"
         evidence_numbers = self._numbers(signal.title + "\n" + signal.published_at.isoformat() + "\n" + signal.evidence)
-        return self._numbers(summary) <= evidence_numbers
+        unsupported = self._numbers(summary) - evidence_numbers
+        return f"出现正文外数字：{sorted(unsupported)}" if unsupported else ""
 
     def build_profile(self, country: Country, evidence: list[dict[str, Any]]) -> CountryProfile:
         compact = [

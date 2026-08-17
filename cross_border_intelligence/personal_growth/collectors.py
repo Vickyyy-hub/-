@@ -54,6 +54,16 @@ def _likely_commercial_demand(title: str, keyword: str) -> bool:
     return any(term in text for term in terms)
 
 
+def _likely_cross_border_policy(title: str, abstract: str) -> bool:
+    text = f"{title} {abstract}".casefold()
+    terms = (
+        "antidumping", "countervailing", "foreign-trade zone", "foreign trade zone", "customs",
+        "tariff", "import", "export", "international trade", "product safety", "consumer product",
+        "recall", "sanction", "export control", "country of origin", "trade agreement",
+    )
+    return any(term in text for term in terms)
+
+
 class Collector:
     def __init__(self, http: HttpClient, country_map: dict[str, Country]) -> None:
         self.http = http
@@ -203,6 +213,8 @@ class Collector:
         for item in payload.get("results", []):
             published = parse_datetime(f"{item['publication_date']} 00:00")
             title = clean_text(item.get("title", ""))
+            if not _likely_cross_border_policy(title, clean_text(item.get("abstract", ""))):
+                continue
             url = item.get("html_url") or item.get("pdf_url") or spec.url
             evidence, fallback = self._article_body(str(url), spec.body_selector)
             if not evidence:
