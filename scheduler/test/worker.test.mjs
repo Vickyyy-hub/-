@@ -149,7 +149,7 @@ test("跨境任务按上海当天分流且不与个人成长任务混淆", () =>
 });
 
 test("合并Cron在免费额度内按时间分流跨境任务", () => {
-  const cron = "17 0,1,2,3,4,8,12 * * *";
+  const cron = "17 0,1,4,8,12 * * *";
   assert.deepEqual(jobsForCron(cron, new Date("2026-08-16T01:17:00Z")), [{
     task: { pipeline: "cross_border", phase: "daily", job: "demand" },
     targetDate: "2026-08-16",
@@ -165,15 +165,6 @@ test("合并Cron在免费额度内按时间分流跨境任务", () => {
       scheduledAt: new Date("2026-08-16T04:17:00Z"),
     },
   ]);
-  assert.deepEqual(jobsForCron(cron, new Date("2026-08-17T02:17:00Z")), [{
-    task: { pipeline: "cross_border", phase: "daily", job: "weekly" },
-    targetDate: "2026-08-17",
-  }]);
-  assert.deepEqual(jobsForCron(cron, new Date("2026-08-18T02:17:00Z")), []);
-  assert.deepEqual(jobsForCron(cron, new Date("2026-09-01T03:17:00Z")), [{
-    task: { pipeline: "cross_border", phase: "daily", job: "profiles" },
-    targetDate: "2026-09-01",
-  }]);
 });
 
 test("午间追补在网站任务运行时不创建新任务", async () => {

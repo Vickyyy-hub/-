@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import os
 import re
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, time
 from email.utils import parsedate_to_datetime
 from typing import Any
@@ -41,6 +42,18 @@ def _same_day(value: datetime, day: date) -> bool:
     return value.astimezone(SHANGHAI).date() == day
 
 
+def _likely_commercial_demand(title: str, keyword: str) -> bool:
+    text = f"{title} {keyword}".casefold()
+    terms = (
+        "amazon", "ebay", "mercado", "shop", "retail", "ecommerce", "e-commerce", "seller",
+        "consumer", "product", "price", "sale", "brand", "store", "tariff", "customs", "trade",
+        "import", "export", "recall", "safety", "appliance", "phone", "5g", "shopping", "delivery",
+        "comercio", "producto", "precio", "tienda", "consumidor", "importación", "exportación",
+        "varejo", "produto", "preço", "loja", "verbraucher", "produkt", "handel", "prix", "produit",
+    )
+    return any(term in text for term in terms)
+
+
 class Collector:
     def __init__(self, http: HttpClient, country_map: dict[str, Country]) -> None:
         self.http = http
@@ -54,33 +67,84 @@ class Collector:
             raise ValueError(f"不支持的采集类型：{spec.kind}")
         return method(spec, day)
 
+    def _article_body(self, url: str, selector: str = "article, main") -> tuple[str, bool]:
+        """Return verified detail-page text; Jina is a fallback, never the canonical URL."""
+        body, fallback, _ = self._article_detail(url, selector)
+        return body, fallback
+
+    def _article_detail(self, url: str, selector: str = "article, main") -> tuple[str, bool, datetime | None]:
+        if not url.startswith(("http://", "https://")):
+            return "", False, None
+        fallback = False
+        published: datetime | None = None
+        try:
+            raw = self.http.get(url).text
+            soup = BeautifulSoup(raw, "lxml")
+            date_node = soup.select_one(
+                "meta[property='article:published_time'], meta[name='date'], meta[name='pubdate'], "
+                "time[datetime], time"
+            )
+            if date_node is not None:
+                date_text = str(date_node.get("content") or date_node.get("datetime") or date_node.get_text(" ", strip=True))
+                try:
+                    published = parse_datetime(date_text)
+                except ValueError:
+                    published = None
+            body = html_to_text(raw, selector)
+            if len(re.sub(r"\s+", "", body)) < 300:
+                body = html_to_text(raw, "main, article, [role='main'], body")
+        except Exception:
+            body = ""
+        if len(re.sub(r"\s+", "", body)) < 300:
+            try:
+                raw = self.http.get(f"https://r.jina.ai/{url}").text
+                marker = "Markdown Content:"
+                body = clean_text(raw.split(marker, 1)[-1] if marker in raw else raw)
+                if published is None:
+                    match = re.search(r"(?:Published|发布日期|Date)\s*:?\s*(20\d{2}[-/.]\d{1,2}[-/.]\d{1,2})", raw, re.I)
+                    if match:
+                        published = parse_datetime(match.group(1))
+                fallback = True
+            except Exception:
+                body = ""
+        if len(re.sub(r"\s+", "", body)) < 300:
+            return "", fallback, published
+        return body[:12000], fallback, published
+
     def collect_rss(self, spec: SourceSpec, day: date) -> tuple[list[Signal], list[str]]:
         response = self.http.get(spec.url)
         feed = feedparser.parse(response.content)
         if feed.bozo and not feed.entries:
             raise RuntimeError(f"RSS解析失败：{feed.bozo_exception}")
         signals: list[Signal] = []
+        body_rejected = 0
         for entry in feed.entries:
             published = _entry_datetime(entry, day)
             if not _same_day(published, day):
                 continue
             title = clean_text(entry.get("title", ""))
             url = str(entry.get("link") or spec.url)
-            summary = html_to_text(str(entry.get("summary") or entry.get("description") or ""))
             if not title:
+                continue
+            body, fallback = self._article_body(url, spec.body_selector)
+            if not body:
+                body_rejected += 1
                 continue
             signals.append(
                 Signal(
                     signal_id(spec.key, url, title), spec.key, spec.name, spec.signal_type,
-                    title, url, published, list(spec.countries), evidence=summary[:4000],
-                    confidence="high", meta={"collector": "rss"},
+                    title, url, published, list(spec.countries), evidence=body,
+                    confidence="high", meta={"collector": "rss", "reader_fallback": fallback},
                 )
             )
-        return signals, []
+        warnings = [f"{body_rejected}篇详情正文不足300字，已跳过"] if body_rejected else []
+        return signals, warnings
 
     def collect_google_trends(self, spec: SourceSpec, day: date) -> tuple[list[Signal], list[str]]:
         signals: list[Signal] = []
         warnings: list[str] = []
+        body_rejected = 0
+        candidates: list[tuple[str, Country, str, str, str, datetime, float | None, str]] = []
         for code in spec.countries:
             country = self.country_map[code]
             url = spec.url.format(geo=country.trends_geo)
@@ -93,28 +157,37 @@ class Collector:
                     published = _entry_datetime(entry, day)
                     if not _same_day(published, day):
                         continue
-                    title = clean_text(entry.get("title", ""))
-                    item_url = str(entry.get("link") or url)
+                    keyword = clean_text(entry.get("title", ""))
+                    title = clean_text(entry.get("ht_news_item_title", ""))
+                    item_url = str(entry.get("ht_news_item_url") or "")
+                    news_source = clean_text(entry.get("ht_news_item_source", ""))
+                    if not title or not item_url:
+                        continue
+                    if not _likely_commercial_demand(title, keyword):
+                        continue
                     traffic = clean_text(entry.get("ht_approx_traffic", ""))
                     number = re.sub(r"[^0-9.]", "", traffic)
                     heat = float(number) if number else None
-                    news = entry.get("ht_news_item") or []
-                    evidence = clean_text(" ".join(
-                        str(item.get("ht_news_item_title") or item.get("title") or "")
-                        for item in news if isinstance(item, dict)
-                    ))
-                    signals.append(
-                        Signal(
-                            # Trends 的落地链接会随抓取时刻变化；同一国家、日期和关键词必须保持同一主键。
-                            signal_id(f"{spec.key}-{code}-{day.isoformat()}", "", title),
-                            spec.key, f"{spec.name}｜{country.name_zh}", spec.signal_type,
-                            title, item_url, published, [code], original_language=country.language,
-                            original_keyword=title, heat=heat, evidence=evidence[:4000],
-                            confidence="high", meta={"traffic": traffic, "geo": country.trends_geo},
-                        )
-                    )
+                    candidates.append((code, country, keyword, title, item_url, published, heat, news_source))
             except Exception as exc:
                 warnings.append(f"{country.name_zh} Google Trends失败：{exc}")
+        with ThreadPoolExecutor(max_workers=8) as executor:
+            bodies = executor.map(lambda item: self._article_detail(item[4]), candidates)
+            for candidate, (evidence, fallback, article_published) in zip(candidates, bodies):
+                code, country, keyword, title, item_url, published, heat, news_source = candidate
+                if not evidence:
+                    body_rejected += 1
+                    continue
+                signals.append(Signal(
+                    signal_id(f"{spec.key}-{code}", item_url, title), spec.key,
+                    news_source or f"{spec.name}｜{country.name_zh}", spec.signal_type,
+                    title, item_url, article_published or published, [code], original_language=country.language,
+                    original_keyword=keyword, heat=heat, evidence=evidence, confidence="high",
+                    meta={"geo": country.trends_geo, "trend_source": spec.name,
+                          "reader_fallback": fallback},
+                ))
+        if body_rejected:
+            warnings.append(f"{body_rejected}篇关联新闻正文不足300字，已跳过")
         return signals, warnings
 
     def collect_federal_register(self, spec: SourceSpec, day: date) -> tuple[list[Signal], list[str]]:
@@ -126,25 +199,32 @@ class Collector:
         params.extend(("conditions[agencies][]", agency) for agency in spec.params.get("agencies", []))
         payload = self.http.get(spec.url, params=params).json()
         signals: list[Signal] = []
+        body_rejected = 0
         for item in payload.get("results", []):
             published = parse_datetime(f"{item['publication_date']} 00:00")
             title = clean_text(item.get("title", ""))
             url = item.get("html_url") or item.get("pdf_url") or spec.url
-            evidence = clean_text(item.get("abstract", ""))
+            evidence, fallback = self._article_body(str(url), spec.body_selector)
+            if not evidence:
+                body_rejected += 1
+                continue
             signals.append(
                 Signal(
                     signal_id(spec.key, url, title), spec.key, spec.name, spec.signal_type,
                     title, url, published, list(spec.countries), evidence=evidence,
-                    confidence="high", meta={"document_number": item.get("document_number")},
+                    confidence="high", meta={"document_number": item.get("document_number"),
+                                             "reader_fallback": fallback},
                 )
             )
-        return signals, []
+        warnings = [f"{body_rejected}篇详情正文不足300字，已跳过"] if body_rejected else []
+        return signals, warnings
 
     def collect_html(self, spec: SourceSpec, day: date) -> tuple[list[Signal], list[str]]:
         raw = self.http.get(spec.url).text
         soup = BeautifulSoup(raw, "lxml")
         signals: list[Signal] = []
         seen: set[str] = set()
+        body_rejected = 0
         containers = soup.select("article, .views-row, .news-item, .card, li")
         for container in containers:
             link = container.select_one("a[href]")
@@ -170,17 +250,22 @@ class Collector:
             if not _same_day(published, day):
                 continue
             seen.add(url)
-            evidence = clean_text(container.get_text(" ", strip=True))
+            evidence, fallback = self._article_body(url, spec.body_selector)
+            if not evidence:
+                body_rejected += 1
+                continue
             signals.append(
                 Signal(
                     signal_id(spec.key, url, title), spec.key, spec.name, spec.signal_type,
-                    title, url, published, list(spec.countries), evidence=evidence[:4000],
-                    confidence="medium", meta={"collector": "html"},
+                    title, url, published, list(spec.countries), evidence=evidence,
+                    confidence="medium", meta={"collector": "html", "reader_fallback": fallback},
                 )
             )
         # A valid page with no entry on the target day is a normal empty result.
         # Only the complete absence of recognizable list containers indicates drift.
         warning = [] if containers else ["页面结构变化：未发现资讯列表容器"]
+        if body_rejected:
+            warning.append(f"{body_rejected}篇详情正文不足300字，已跳过")
         return signals, warning
 
     def collect_reference(self, spec: SourceSpec, day: date) -> tuple[list[Signal], list[str]]:

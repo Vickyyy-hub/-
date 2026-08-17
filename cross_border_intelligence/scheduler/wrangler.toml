@@ -8,7 +8,7 @@ enabled = true
 head_sampling_rate = 1
 
 [triggers]
-crons = ["17 0 * * *", "47 1 * * *", "17 4 * * *", "47 4 * * *", "17 8 * * *", "17 12 * * *"]
+crons = ["17 0 * * *", "17 1 * * *", "17 4 * * *", "17 8 * * *", "17 12 * * *"]
 
 [vars]
 GITHUB_OWNER = "Vickyyy-hub"

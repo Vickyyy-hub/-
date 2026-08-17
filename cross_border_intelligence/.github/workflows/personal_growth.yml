@@ -2,15 +2,10 @@ name: 欧洲与拉美跨境市场情报
 run-name: 跨境市场情报 · ${{ inputs.job || 'auto' }} · ${{ inputs.target_date || '自动日期' }} · ${{ inputs.trigger_source || github.event_name }}
 
 on:
-  schedule:
-    - cron: "0 0,4,8,12 * * *"
-    - cron: "30 1 * * *"
-    - cron: "0 2 * * 1"
-    - cron: "0 3 1 * *"
   workflow_dispatch:
     inputs:
       job:
-        description: "auto、sources、policy、demand、weekly、profiles或all"
+        description: "auto、policy、demand或all"
         required: false
         default: "auto"
         type: string
@@ -39,6 +34,10 @@ on:
         required: false
         default: false
         type: boolean
+      delete_legacy_feishu:
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -58,7 +57,7 @@ jobs:
       FEISHU_APP_TOKEN: ${{ secrets.FEISHU_APP_TOKEN }}
       MERCADOLIBRE_ACCESS_TOKEN: ${{ secrets.MERCADOLIBRE_ACCESS_TOKEN }}
       EBAY_ACCESS_TOKEN: ${{ secrets.EBAY_ACCESS_TOKEN }}
-      STATE_DB: .state/market_intelligence.sqlite
+      STATE_DB: .state/cross_border_news_v2.sqlite
       GITHUB_EVENT_SCHEDULE: ${{ github.event.schedule }}
       TRIGGER_SOURCE: ${{ inputs.trigger_source || github.event_name }}
       PROGRESSIVE_WRITE_INTERVAL_MINUTES: "60"
@@ -99,10 +98,11 @@ jobs:
           if [[ "${{ inputs.collect_only }}" == "true" ]]; then args+=(--collect-only); fi
           if [[ "${{ inputs.check_feishu }}" == "true" ]]; then args=(--check-feishu); fi
           if [[ "${{ inputs.setup_feishu }}" == "true" ]]; then args=(--setup-feishu); fi
+          if [[ "${{ inputs.delete_legacy_feishu }}" == "true" ]]; then args=(--delete-legacy-feishu); fi
           python main.py "${args[@]}"
       - name: 验证完整日报
         id: validate
-        if: ${{ !inputs.check_feishu && !inputs.setup_feishu && !inputs.dry_run && !inputs.collect_only }}
+        if: ${{ !inputs.check_feishu && !inputs.setup_feishu && !inputs.delete_legacy_feishu && !inputs.dry_run && !inputs.collect_only }}
         run: |
           python - <<'PY'
           import json

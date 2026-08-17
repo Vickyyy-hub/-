@@ -16,8 +16,8 @@ from .models import Country, CountryProfile, ProductDirection, Signal
 from .text import clean_text, parse_json_object
 
 # Template-validator compatibility and explicit cache/prompt versioning.
-FILTER_VERSION = "market_signal_v1"
-SUMMARY_VERSION = "market_summary_v1"
+FILTER_VERSION = "cross_filter_v2"
+SUMMARY_VERSION = "cross_summary_v2"
 UNSUPPORTED_PLACEHOLDERS = '禁止在摘要中使用“相关时间”或“相关数值”等占位表达。'
 # Validator marker mirrors the rejection rule: 相关时间" in summary or "相关数值
 
@@ -130,17 +130,26 @@ class MarketAnalyzer:
             raise ModelSystemError("模型返回结构异常")
         raise ModelSystemError("模型请求未获得结果")
 
-    def enrich_signals(self, signals: list[Signal], progressive_callback=None) -> list[Signal]:
-        for start in range(0, len(signals), 20):
-            batch = signals[start:start + 20]
-            self._enrich_batch(batch)
-            if progressive_callback:
-                progressive_callback(signals[: start + len(batch)])
-        return signals
+    @staticmethod
+    def _visible_length(value: str) -> int:
+        return len(re.sub(r"\s+", "", value))
 
-    def _enrich_batch(self, batch: list[Signal]) -> None:
+    @staticmethod
+    def _numbers(value: str) -> set[str]:
+        return {item.replace(",", "") for item in re.findall(r"(?<![A-Za-z])\d[\d,.]*%?", value)}
+
+    def enrich_signals(self, signals: list[Signal], progressive_callback=None) -> list[Signal]:
+        selected: list[Signal] = []
+        for start in range(0, len(signals), 12):
+            batch = signals[start:start + 12]
+            selected.extend(self._enrich_batch(batch))
+            if progressive_callback:
+                progressive_callback(selected)
+        return selected
+
+    def _enrich_batch(self, batch: list[Signal]) -> list[Signal]:
         if not batch:
-            return
+            return []
         try:
             evidence = [
                 {
@@ -149,17 +158,20 @@ class MarketAnalyzer:
                     "source": item.source_name,
                     "country": item.countries,
                     "type": item.signal_type,
-                    "evidence": item.evidence[:800],
+                    "keyword": item.original_keyword,
+                    "evidence": item.evidence[:1600],
                 }
                 for item in batch
             ]
             raw = self._request(
-                "你是跨境市场情报编辑。只依据输入证据，不补充数字或事实。"
-                "为每条信号翻译关键词、生成不超过80字中文摘要、不超过60字影响结论和1到3个主题。"
-                "政策与统计内容不得误写成消费趋势。只输出JSON对象。",
+                "你是跨境资讯主编，执行第一阶段严格筛选。只依据正文证据。仅保留与跨境贸易、"
+                "海关关税、产品安全、平台规则、跨境电商或可验证消费需求直接相关的新闻。"
+                "排除体育、明星、比赛、普通娱乐、政治人物热度、栏目页、API说明、统计数据库入口、"
+                "没有具体事件的内容，以及无法说明对卖家/平台/消费者/供应链直接影响的内容。只输出JSON。",
                 "输入：" + json.dumps(evidence, ensure_ascii=False) + "\n返回格式："
-                '{"items":[{"id":"...","keyword_zh":"...","summary_zh":"...",'
-                '"ai_conclusion":"...","topics":["..."]}]}',
+                '{"items":[{"id":"...","selected":true,"reason":"...","keyword_zh":"...",'
+                '"topic":"政策合规|海关贸易|产品安全|平台动态|消费需求|供应链",'
+                '"section":"欧洲市场|拉美市场|全球政策|平台与需求"}]}',
                 3000,
             )
             try:
@@ -175,32 +187,69 @@ class MarketAnalyzer:
                 except (ValueError, json.JSONDecodeError) as exc:
                     raise InvalidAIError(str(exc)) from exc
             mapped = {str(item.get("id")): item for item in result.get("items", [])}
+            selected: list[Signal] = []
             for signal in batch:
                 item = mapped.get(signal.signal_id)
-                if not item:
+                if not item or item.get("selected") is not True:
                     continue
                 signal.keyword_zh = clean_text(str(item.get("keyword_zh", "")))[:100]
-                signal.summary_zh = clean_text(str(item.get("summary_zh", "")))[:300]
-                if "相关时间" in signal.summary_zh or "相关数值" in signal.summary_zh:
-                    signal.summary_zh = ""
+                signal.topics = [clean_text(str(item.get("topic", "跨境资讯")))[:30]]
+                signal.ai_conclusion = clean_text(str(item.get("section", "跨境资讯")))[:30]
+                summary = self._summarize(signal, correction=False)
+                if not self._summary_valid(signal, summary):
+                    summary = self._summarize(signal, correction=True)
+                if not self._summary_valid(signal, summary):
                     self.summary_rejected += 1
-                    self.warnings.append(f"摘要含不受支持占位词，已拒绝：{signal.title}")
-                signal.ai_conclusion = clean_text(str(item.get("ai_conclusion", "")))[:240]
-                signal.topics = [clean_text(str(value))[:30] for value in item.get("topics", [])][:3]
+                    self.warnings.append(f"摘要两次校验不合格，已跳过：{signal.title}")
+                    continue
+                signal.summary_zh = summary
+                selected.append(signal)
+            return selected
         except ArkContentSafetyError as exc:
             if len(batch) > 1:
+                selected = []
                 for signal in batch:
-                    self._enrich_batch([signal])
-                return
+                    selected.extend(self._enrich_batch([signal]))
+                return selected
             self.content_safety_skipped += 1
             self.warnings.append(f"内容安全限制，已跳过AI处理：{batch[0].title} ({str(exc)[:120]})")
         except InvalidAIError as exc:
             if len(batch) > 1:
+                selected = []
                 for signal in batch:
-                    self._enrich_batch([signal])
-                return
+                    selected.extend(self._enrich_batch([signal]))
+                return selected
             self.invalid_ai_skipped += 1
             self.warnings.append(f"AI格式无效，已跳过：{batch[0].title} ({exc})")
+        return []
+
+    def _summarize(self, signal: Signal, *, correction: bool) -> str:
+        instruction = (
+            "上次摘要未通过长度或证据校验，请重新写。" if correction else "请生成成品摘要。"
+        )
+        raw = self._request(
+            "你是跨境商业资讯编辑。只依据所给文章正文，写一段中文核心干货，80至150个可见字符，"
+            "目标约100字，不换行。依次交代：谁在何时做了什么或发生何变化；关键政策、数据、产品或"
+            "市场信息；对跨境卖家、平台、消费者或供应链的直接影响。禁止标题改写、空话、猜测、"
+            "证据外数字和虚构结论。正文没写日期时不要编日期。只输出JSON。",
+            instruction + "\n" + json.dumps({
+                "id": signal.signal_id, "title": signal.title,
+                "published_at": signal.published_at.isoformat(),
+                "evidence": signal.evidence[:6000],
+            }, ensure_ascii=False) + '\n返回：{"summary_zh":"..."}',
+            900,
+        )
+        try:
+            return clean_text(str(parse_json_object(raw).get("summary_zh", "")))
+        except (ValueError, json.JSONDecodeError):
+            return ""
+
+    def _summary_valid(self, signal: Signal, summary: str) -> bool:
+        length = self._visible_length(summary)
+        if not 80 <= length <= 150 or "\n" in summary or any(value in summary for value in ("相关时间", "相关数值")):
+            return False
+        evidence_numbers = self._numbers(signal.title + "\n" + signal.published_at.isoformat() + "\n" + signal.evidence)
+        return self._numbers(summary) <= evidence_numbers
 
     def build_profile(self, country: Country, evidence: list[dict[str, Any]]) -> CountryProfile:
         compact = [

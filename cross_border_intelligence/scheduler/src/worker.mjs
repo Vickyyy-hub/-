@@ -194,13 +194,9 @@ function jsonResponse(payload, status = 200) {
 export default {
   async scheduled(controller, env, ctx) {
     const scheduledAt = new Date(controller.scheduledTime);
-    if (controller.cron === "47 4 * * *") {
-      ctx.waitUntil(ensureOldestMissingWorkflowRun(env, scheduledAt));
-      return;
-    }
     const jobs = {
       "17 0 * * *": "policy",
-      "47 1 * * *": "demand",
+      "17 1 * * *": "demand",
       "17 4 * * *": "policy",
       "17 8 * * *": "policy",
       "17 12 * * *": "policy",

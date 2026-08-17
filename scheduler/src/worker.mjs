@@ -68,7 +68,7 @@ function taskSpec(env, task = { pipeline: "website", phase: "daily" }) {
   }
   if (pipeline === "cross_border") {
     const job = task.job || "all";
-    if (!["all", "sources", "policy", "demand", "weekly", "profiles"].includes(job)) {
+    if (!["all", "policy", "demand"].includes(job)) {
       throw new Error(`未知跨境任务：${job}`);
     }
     return {
@@ -455,7 +455,7 @@ export function jobsForCron(cron, now = new Date()) {
       scheduledAt: now,
     }];
   }
-  if (cron === "17 0,1,2,3,4,8,12 * * *") {
+  if (cron === "17 0,1,4,8,12 * * *") {
     const utcHour = now.getUTCHours();
     const targetDate = shanghaiDate(now);
     if ([0, 8, 12].includes(utcHour)) {
@@ -463,16 +463,6 @@ export function jobsForCron(cron, now = new Date()) {
     }
     if (utcHour === 1) {
       return [{ task: { pipeline: "cross_border", phase: "daily", job: "demand" }, targetDate }];
-    }
-    if (utcHour === 2) {
-      return now.getUTCDay() === 1
-        ? [{ task: { pipeline: "cross_border", phase: "daily", job: "weekly" }, targetDate }]
-        : [];
-    }
-    if (utcHour === 3) {
-      return now.getUTCDate() === 1
-        ? [{ task: { pipeline: "cross_border", phase: "daily", job: "profiles" }, targetDate }]
-        : [];
     }
     if (utcHour === 4) {
       return [
@@ -505,12 +495,6 @@ export function jobsForCron(cron, now = new Date()) {
       recoveryLookbackDays: 7,
       scheduledAt: now,
     }];
-  }
-  if (cron === "17 2 * * 1") {
-    return [{ task: { pipeline: "cross_border", phase: "daily", job: "weekly" }, targetDate: shanghaiDate(now) }];
-  }
-  if (cron === "17 3 1 * *") {
-    return [{ task: { pipeline: "cross_border", phase: "daily", job: "profiles" }, targetDate: shanghaiDate(now) }];
   }
   throw new Error(`未配置的Cron：${cron}`);
 }
