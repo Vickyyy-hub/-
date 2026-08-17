@@ -273,6 +273,9 @@ class MarketAnalyzer:
             return "必须是一段"
         if any(value in summary for value in ("相关时间", "相关数值")):
             return "包含占位表达"
+        subjective = next((value for value in ("政策利好", "重大利好", "利空", "高利润", "巨大商机") if value in summary), "")
+        if subjective:
+            return f"包含证据外判断：{subjective}"
         evidence_numbers = self._numbers(signal.title + "\n" + signal.published_at.isoformat() + "\n" + signal.evidence)
         unsupported = self._numbers(summary) - evidence_numbers
         return f"出现正文外数字：{sorted(unsupported)}" if unsupported else ""
