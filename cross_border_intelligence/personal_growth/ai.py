@@ -17,7 +17,7 @@ from .text import clean_text, parse_json_object
 
 # Template-validator compatibility and explicit cache/prompt versioning.
 FILTER_VERSION = "cross_filter_v2"
-SUMMARY_VERSION = "cross_summary_v2"
+SUMMARY_VERSION = "cross_summary_v3"
 UNSUPPORTED_PLACEHOLDERS = '禁止在摘要中使用“相关时间”或“相关数值”等占位表达。'
 # Validator marker mirrors the rejection rule: 相关时间" in summary or "相关数值
 
