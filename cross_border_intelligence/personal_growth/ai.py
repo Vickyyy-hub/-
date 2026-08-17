@@ -136,7 +136,18 @@ class MarketAnalyzer:
 
     @staticmethod
     def _numbers(value: str) -> set[str]:
-        return {item.replace(",", "") for item in re.findall(r"(?<![A-Za-z])\d[\d,.]*%?", value)}
+        result: set[str] = set()
+        for item in re.findall(r"(?<![A-Za-z])\d[\d,.]*%?", value):
+            compact = item.replace(",", "")
+            suffix = "%" if compact.endswith("%") else ""
+            compact = compact.removesuffix("%").rstrip(".")
+            if "." in compact:
+                left, right = compact.split(".", 1)
+                compact = f"{int(left or '0')}.{right}"
+            elif compact:
+                compact = str(int(compact))
+            result.add(compact + suffix)
+        return result
 
     def enrich_signals(self, signals: list[Signal], progressive_callback=None) -> list[Signal]:
         selected: list[Signal] = []
@@ -207,6 +218,8 @@ class MarketAnalyzer:
                     self.warnings.append(f"摘要两次校验不合格，已跳过：{signal.title}（{reason}）")
                     continue
                 signal.summary_zh = summary
+                signal.meta["filter_version"] = FILTER_VERSION
+                signal.meta["summary_version"] = SUMMARY_VERSION
                 selected.append(signal)
             return selected
         except ArkContentSafetyError as exc:

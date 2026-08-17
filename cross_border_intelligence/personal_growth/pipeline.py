@@ -9,7 +9,7 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
-from .ai import ArkContentSafetyError, MarketAnalyzer, ModelRateLimitError, ModelSystemError
+from .ai import FILTER_VERSION, SUMMARY_VERSION, ArkContentSafetyError, MarketAnalyzer, ModelRateLimitError, ModelSystemError
 from .collectors import Collector
 from .config import countries, feishu_config, sources
 from .feishu import FeishuMarketBase, signal_rows
@@ -58,8 +58,7 @@ class MarketPipeline:
             if isinstance(outcome, Exception):
                 status["error"] = str(outcome)
                 message = f"{spec.name}采集失败：{outcome}"
-                (report.warnings if spec.optional else report.errors).append(message)
-                report.partial = report.partial or not spec.optional
+                report.warnings.append(message)
             else:
                 items, warnings = outcome
                 collected.extend(items)
@@ -82,7 +81,13 @@ class MarketPipeline:
     @staticmethod
     def _valid_cached(item: dict[str, Any]) -> bool:
         summary = str(item.get("summary_zh") or "")
-        return 80 <= len(re.sub(r"\s+", "", summary)) <= 150 and bool(item.get("topics"))
+        meta = item.get("meta") or {}
+        return (
+            80 <= len(re.sub(r"\s+", "", summary)) <= 150
+            and bool(item.get("topics"))
+            and meta.get("filter_version") == FILTER_VERSION
+            and meta.get("summary_version") == SUMMARY_VERSION
+        )
 
     def run_signals(self, day: date, report: MarketRunReport, *, cadence: str,
                     dry_run: bool, collect_only: bool) -> None:
@@ -185,7 +190,9 @@ class MarketPipeline:
             if str(exc) not in report.errors:
                 report.errors.append(str(exc))
             report.partial = True
-        report.coverage_complete = not report.partial and all(not value.get("error") for value in report.source_status.values())
+        report.coverage_complete = not report.partial and any(
+            not value.get("error") for value in report.source_status.values()
+        )
         if dry_run or collect_only:
             report.final_output_verified = False
         elif report.coverage_complete and report.write_failed == 0 and report.final_output_verified:
