@@ -7,7 +7,7 @@ from typing import Any, Iterable
 
 from .http import HttpClient
 from .models import Article
-from .text import SHANGHAI, normalize_title, normalize_url
+from .text import SHANGHAI, clean_text, normalize_title, normalize_url
 
 
 class FeishuBitable:
@@ -16,6 +16,7 @@ class FeishuBitable:
     batch_size = 50
     token_error_codes = {99991661, 99991663, 99991668}
     required_fields = {
+        "标题": {"field_name": "标题", "type": 1},
         "核心干货": {"field_name": "核心干货", "type": 1},
         "来源名称": {"field_name": "来源名称", "type": 3},
         "发布日期": {"field_name": "发布日期", "type": 5, "property": {"date_formatter": "yyyy-MM-dd"}},
@@ -140,6 +141,11 @@ class FeishuBitable:
         }
         if wrong:
             raise RuntimeError(f"飞书字段类型不匹配：{wrong}")
+        source_type = self.field_types.get("来源网站")
+        if source_type not in {1, 15}:
+            if source_type is None:
+                raise RuntimeError("飞书缺少字段：['来源网站']")
+            raise RuntimeError(f"飞书字段类型不匹配：{{'来源网站': ({source_type}, '文本或超链接')}}")
 
     def read_only_status(self) -> dict[str, Any]:
         records = self.list_records()
@@ -208,10 +214,19 @@ class FeishuBitable:
         return int(datetime.combine(value, time.min, tzinfo=SHANGHAI).timestamp() * 1000)
 
     def record_fields(self, article: Article) -> dict[str, Any]:
+        title = clean_text(article.title)
+        url = article.url.strip()
+        if not title:
+            raise ValueError(f"文章标题为空，拒绝写入：{url or '<无链接>'}")
+        if not url:
+            raise ValueError(f"文章来源链接为空，拒绝写入：{title}")
+        missing_identity_fields = {"标题", "来源网站"} - set(self.field_types)
+        if missing_identity_fields:
+            raise RuntimeError(f"飞书缺少身份字段，拒绝静默丢弃：{sorted(missing_identity_fields)}")
         ai = article.ai_result or {}
         fields = {
-            "标题": article.title[:1000],
-            "来源网站": self._source_value(article.url),
+            "标题": title[:1000],
+            "来源网站": self._source_value(url),
             "内容主题": self._field_value("内容主题", list(ai.get("topics") or [])),
             "归档板块": self._field_value("归档板块", str(ai.get("category", "社会与文化"))),
             "核心干货": str(ai.get("core_content", ""))[:100_000],
@@ -267,11 +282,15 @@ class FeishuBitable:
                 continue
             article.record_id = str(record.get("record_id", ""))
             fields = record.get("fields") or {}
+            current_title = self._extract_text(fields.get("标题"))
+            current_url = self._extract_text(fields.get("来源网站"))
             current_status = self._extract_text(fields.get("记录状态"))
             current_content = self._extract_text(fields.get("核心干货"))
             expected_content = str((article.ai_result or {}).get("core_content", ""))
             if (
-                current_status != (article.record_status or "主稿")
+                clean_text(current_title) != clean_text(article.title)
+                or normalize_url(current_url) != normalize_url(article.url)
+                or current_status != (article.record_status or "主稿")
                 or current_content != expected_content
                 or fields.get("日报日期") in (None, "")
             ):
@@ -292,7 +311,9 @@ class FeishuBitable:
                 continue
             fields = record.get("fields") or {}
             if (
-                self._extract_text(fields.get("记录状态")) != (article.record_status or "主稿")
+                clean_text(self._extract_text(fields.get("标题"))) != clean_text(article.title)
+                or normalize_url(self._extract_text(fields.get("来源网站"))) != normalize_url(article.url)
+                or self._extract_text(fields.get("记录状态")) != (article.record_status or "主稿")
                 or self._extract_text(fields.get("核心干货")) != str((article.ai_result or {}).get("core_content", ""))
                 or fields.get("日报日期") in (None, "")
             ):
@@ -356,7 +377,65 @@ class FeishuBitable:
         actual = {
             record.get("record_id", "")
             for record in self.list_records()
-            if self._extract_text((record.get("fields") or {}).get("核心干货"))
+            if self._extract_text((record.get("fields") or {}).get("标题"))
+            and self._extract_text((record.get("fields") or {}).get("来源网站"))
+            and self._extract_text((record.get("fields") or {}).get("核心干货"))
             and self._extract_text((record.get("fields") or {}).get("记录状态"))
         }
         return expected - actual
+
+    def missing_title_records(self) -> list[dict[str, Any]]:
+        """Return records that have a source URL but no visible title."""
+        missing: list[dict[str, Any]] = []
+        for record in self.list_records():
+            fields = record.get("fields") or {}
+            url = self._extract_text(fields.get("来源网站")).strip()
+            title = self._extract_text(fields.get("标题")).strip()
+            if url and not title:
+                missing.append(record)
+        return missing
+
+    def repair_missing_titles(self, titles_by_url: dict[str, str]) -> dict[str, Any]:
+        """Update only blank titles in place and verify the result."""
+        before = self.missing_title_records()
+        updates: list[dict[str, Any]] = []
+        unresolved: list[dict[str, str]] = []
+        for record in before:
+            fields = record.get("fields") or {}
+            url = self._extract_text(fields.get("来源网站")).strip()
+            title = clean_text(titles_by_url.get(normalize_url(url), ""))
+            record_id = str(record.get("record_id") or "")
+            if not title or not record_id:
+                unresolved.append({"record_id": record_id, "url": url})
+                continue
+            updates.append({"record_id": record_id, "fields": {"标题": title[:1000]}})
+
+        updated = 0
+        failed = 0
+        path = f"/bitable/v1/apps/{self.app_token}/tables/{self.table_id}/records/batch_update"
+        for index in range(0, len(updates), self.batch_size):
+            batch = updates[index : index + self.batch_size]
+            try:
+                payload = self._api("POST", path, json={"records": batch})
+                updated += len(payload["data"].get("records", []))
+            except Exception as exc:
+                print(f"[飞书] 标题修复失败（{len(batch)} 条）：{exc}")
+                failed += len(batch)
+
+        remaining = self.missing_title_records()
+        remaining_ids = {str(record.get("record_id") or "") for record in remaining}
+        expected_ids = {item["record_id"] for item in updates}
+        verification_failed = len(expected_ids & remaining_ids)
+        failed = max(failed, verification_failed)
+        updated = max(0, len(expected_ids) - verification_failed)
+        return {
+            "blank_before": len(before),
+            "resolved": len(updates),
+            "updated": updated,
+            "failed": failed,
+            "blank_after": len(remaining),
+            "unresolved": unresolved,
+            "ai_calls": 0,
+            "created": 0,
+            "deleted": 0,
+        }

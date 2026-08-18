@@ -30,6 +30,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--backfill-daily-dates", action="store_true", help="仅按发布日期回填飞书日报日期，不调用AI")
     parser.add_argument("--write-cached-only", action="store_true", help="只写入已有AI缓存，不继续调用模型")
     parser.add_argument("--cached-complete", action="store_true", help="缓存来自完整分析，写入成功后可标记完整日报")
+    parser.add_argument("--repair-missing-titles", action="store_true", help="仅原地修复飞书空标题，不调用AI、不新增记录")
     return parser.parse_args()
 
 
@@ -39,6 +40,16 @@ def resolve_sources(value: str) -> list[str]:
 
 def main() -> int:
     args = parse_args()
+    if args.repair_missing_titles:
+        from personal_growth.title_repair import repair_all_missing_titles
+
+        result = repair_all_missing_titles()
+        Path("title-repair-report.json").write_text(
+            json.dumps(result, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return 2 if result["failed"] else 0
     if args.backfill_daily_dates:
         client = FeishuBitable(HttpClient())
         updated, failed, skipped = client.backfill_daily_dates()

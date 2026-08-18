@@ -75,6 +75,11 @@ on:
         required: false
         default: false
         type: boolean
+      repair_missing_titles:
+        description: "仅原地修复飞书空标题，不调用AI、不新增记录"
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -84,7 +89,48 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  repair-titles:
+    if: ${{ inputs.repair_missing_titles == true }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      FEISHU_APP_ID: ${{ secrets.FEISHU_APP_ID }}
+      FEISHU_APP_SECRET: ${{ secrets.FEISHU_APP_SECRET }}
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - name: 拉取代码
+        uses: actions/checkout@v4
+      - name: 安装 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: 安装依赖
+        run: python -m pip install -r requirements.txt
+      - name: 单元测试
+        run: pytest -q
+      - name: 原地修复空标题
+        run: python main.py --repair-missing-titles
+      - name: 保存标题修复报告
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: title-repair-report-${{ github.run_id }}
+          path: title-repair-report.json
+          if-no-files-found: warn
+      - name: 写入任务摘要
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          if [[ -f title-repair-report.json ]]; then
+            echo '## 飞书空标题修复报告' >> "$GITHUB_STEP_SUMMARY"
+            echo '```json' >> "$GITHUB_STEP_SUMMARY"
+            cat title-repair-report.json >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+          fi
+
   run:
+    if: ${{ inputs.repair_missing_titles != true }}
     runs-on: ubuntu-latest
     timeout-minutes: 330
     env:

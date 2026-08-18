@@ -791,6 +791,7 @@ def test_feishu_read_only_mode_never_creates_fields(monkeypatch):
     monkeypatch.setenv("FEISHU_APP_SECRET", "secret")
     monkeypatch.setattr(FeishuBitable, "_tenant_token", lambda self: "token")
     field_types = {name: spec["type"] for name, spec in FeishuBitable.required_fields.items()}
+    field_types["来源网站"] = 15
     monkeypatch.setattr(FeishuBitable, "_field_types", lambda self: field_types)
     monkeypatch.setattr(
         FeishuBitable,
@@ -881,7 +882,7 @@ def test_feishu_write_uses_small_independent_batches(monkeypatch):
     client = object.__new__(FeishuBitable)
     client.app_token = "app"
     client.table_id = "table"
-    client.field_types = {"标题": 1}
+    client.field_types = {"标题": 1, "来源网站": 15}
     calls = []
     monkeypatch.setattr(
         client,
@@ -896,3 +897,86 @@ def test_feishu_write_uses_small_independent_batches(monkeypatch):
     written, failed = client.write(articles)
     assert (written, failed) == (123, 0)
     assert [len(batch) for batch in calls] == [50, 50, 23]
+
+
+def test_feishu_title_is_required_and_identity_fields_cannot_be_silently_dropped():
+    assert FeishuBitable.required_fields["标题"]["type"] == 1
+    client = object.__new__(FeishuBitable)
+    client.field_types = {"核心干货": 1}
+    article = Article("虎嗅", "真实标题", "https://example.com/title", from_epoch(1786195964))
+    try:
+        client.record_fields(article)
+    except RuntimeError as exc:
+        assert "拒绝静默丢弃" in str(exc)
+    else:
+        raise AssertionError("缺少标题或链接字段时必须拒绝写入")
+
+
+def test_feishu_rejects_empty_article_title_and_url():
+    client = object.__new__(FeishuBitable)
+    client.field_types = {"标题": 1, "来源网站": 15}
+    empty_title = Article("虎嗅", "", "https://example.com/no-title", from_epoch(1786195964))
+    empty_url = Article("虎嗅", "有标题", "", from_epoch(1786195964))
+    for article, marker in ((empty_title, "标题为空"), (empty_url, "链接为空")):
+        try:
+            client.record_fields(article)
+        except ValueError as exc:
+            assert marker in str(exc)
+        else:
+            raise AssertionError("空标题或空链接必须拒绝写入")
+
+
+def test_feishu_upsert_repairs_blank_existing_title(monkeypatch):
+    client = object.__new__(FeishuBitable)
+    article = Article("虎嗅", "恢复后的标题", "https://example.com/repair", from_epoch(1786195964))
+    article.ai_result = {"core_content": "正文"}
+    record = {
+        "record_id": "r1",
+        "fields": {
+            "标题": "",
+            "来源网站": "https://example.com/repair",
+            "记录状态": "主稿",
+            "核心干货": "正文",
+            "日报日期": 1,
+        },
+    }
+    monkeypatch.setattr(client, "record_index", lambda: ({normalize_url(article.url): record}, {}))
+    monkeypatch.setattr(client, "write", lambda articles: (0, 0))
+    updated_articles = []
+    monkeypatch.setattr(client, "update", lambda articles: (updated_articles.extend(articles) or len(updated_articles), 0))
+    written, updated, failed = client.upsert([article])
+    assert (written, updated, failed) == (0, 1, 0)
+    assert updated_articles == [article]
+
+
+def test_feishu_verification_fails_when_title_or_url_is_missing(monkeypatch):
+    client = object.__new__(FeishuBitable)
+    article = Article("虎嗅", "真实标题", "https://example.com/verify", from_epoch(1786195964))
+    article.ai_result = {"core_content": "正文"}
+    record = {
+        "record_id": "r1",
+        "fields": {"标题": "", "来源网站": article.url, "记录状态": "主稿", "核心干货": "正文", "日报日期": 1},
+    }
+    monkeypatch.setattr(client, "record_index", lambda: ({normalize_url(article.url): record}, {}))
+    assert client.verify_article_states([article]) == {normalize_url(article.url)}
+
+
+def test_repair_missing_titles_is_in_place_and_idempotent(monkeypatch):
+    client = object.__new__(FeishuBitable)
+    client.app_token = "app"
+    client.table_id = "table"
+    before = [{"record_id": "r1", "fields": {"标题": "", "来源网站": "https://example.com/one"}}]
+    after = [{"record_id": "r1", "fields": {"标题": "原始标题", "来源网站": "https://example.com/one"}}]
+    reads = iter([before, after, after, after])
+    monkeypatch.setattr(client, "list_records", lambda: next(reads))
+    calls = []
+    monkeypatch.setattr(
+        client,
+        "_api",
+        lambda method, path, **kwargs: calls.append(kwargs["json"]) or {"data": {"records": [{"record_id": "r1"}]}},
+    )
+    first = client.repair_missing_titles({normalize_url("https://example.com/one"): "原始标题"})
+    second = client.repair_missing_titles({normalize_url("https://example.com/one"): "原始标题"})
+    assert first["updated"] == 1 and first["failed"] == 0 and first["blank_after"] == 0
+    assert second["updated"] == 0 and second["blank_before"] == 0
+    assert len(calls) == 1
