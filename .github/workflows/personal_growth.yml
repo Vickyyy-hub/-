@@ -80,6 +80,11 @@ on:
         required: false
         default: false
         type: boolean
+      migrate_primary_titles:
+        description: "将已恢复标题迁移到飞书首列主字段，不调用AI、不新增记录"
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -89,8 +94,38 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  migrate-primary-titles:
+    if: ${{ inputs.migrate_primary_titles == true }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      FEISHU_APP_ID: ${{ secrets.FEISHU_APP_ID }}
+      FEISHU_APP_SECRET: ${{ secrets.FEISHU_APP_SECRET }}
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - name: 拉取代码
+        uses: actions/checkout@v4
+      - name: 安装 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: 安装依赖
+        run: python -m pip install -r requirements.txt
+      - name: 单元测试
+        run: pytest -q
+      - name: 迁移标题至飞书首列主字段
+        run: python main.py --migrate-primary-titles
+      - name: 保存主字段迁移报告
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: primary-title-migration-report-${{ github.run_id }}
+          path: primary-title-migration-report.json
+          if-no-files-found: warn
+
   repair-titles:
-    if: ${{ inputs.repair_missing_titles == true }}
+    if: ${{ inputs.repair_missing_titles == true && inputs.migrate_primary_titles != true }}
     runs-on: ubuntu-latest
     timeout-minutes: 90
     env:
@@ -130,7 +165,7 @@ jobs:
           fi
 
   run:
-    if: ${{ inputs.repair_missing_titles != true }}
+    if: ${{ inputs.repair_missing_titles != true && inputs.migrate_primary_titles != true }}
     runs-on: ubuntu-latest
     timeout-minutes: 330
     env:

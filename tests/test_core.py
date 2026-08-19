@@ -751,6 +751,7 @@ def test_feishu_hyperlink_shape_without_initializing_client():
 
 def test_feishu_record_contains_daily_date():
     client = object.__new__(FeishuBitable)
+    client.primary_field = dict(FeishuBitable.primary_title_spec)
     client.field_types = {
         "标题": 1,
         "来源网站": 15,
@@ -791,8 +792,13 @@ def test_feishu_read_only_mode_never_creates_fields(monkeypatch):
     monkeypatch.setenv("FEISHU_APP_SECRET", "secret")
     monkeypatch.setattr(FeishuBitable, "_tenant_token", lambda self: "token")
     field_types = {name: spec["type"] for name, spec in FeishuBitable.required_fields.items()}
+    field_types["标题"] = 1
     field_types["来源网站"] = 15
-    monkeypatch.setattr(FeishuBitable, "_field_types", lambda self: field_types)
+    field_items = [
+        {"field_id": f"fld-{index}", "field_name": name, "type": field_type, "is_primary": name == "标题"}
+        for index, (name, field_type) in enumerate(field_types.items())
+    ]
+    monkeypatch.setattr(FeishuBitable, "_list_fields", lambda self: field_items)
     monkeypatch.setattr(
         FeishuBitable,
         "ensure_fields",
@@ -880,6 +886,7 @@ def test_feishu_refreshes_and_retries_once_on_expired_token(monkeypatch):
 
 def test_feishu_write_uses_small_independent_batches(monkeypatch):
     client = object.__new__(FeishuBitable)
+    client.primary_field = dict(FeishuBitable.primary_title_spec)
     client.app_token = "app"
     client.table_id = "table"
     client.field_types = {"标题": 1, "来源网站": 15}
@@ -900,8 +907,9 @@ def test_feishu_write_uses_small_independent_batches(monkeypatch):
 
 
 def test_feishu_title_is_required_and_identity_fields_cannot_be_silently_dropped():
-    assert FeishuBitable.required_fields["标题"]["type"] == 1
+    assert FeishuBitable.primary_title_spec == {"field_name": "标题", "type": 1, "is_primary": True}
     client = object.__new__(FeishuBitable)
+    client.primary_field = dict(FeishuBitable.primary_title_spec)
     client.field_types = {"核心干货": 1}
     article = Article("虎嗅", "真实标题", "https://example.com/title", from_epoch(1786195964))
     try:
@@ -914,6 +922,7 @@ def test_feishu_title_is_required_and_identity_fields_cannot_be_silently_dropped
 
 def test_feishu_rejects_empty_article_title_and_url():
     client = object.__new__(FeishuBitable)
+    client.primary_field = dict(FeishuBitable.primary_title_spec)
     client.field_types = {"标题": 1, "来源网站": 15}
     empty_title = Article("虎嗅", "", "https://example.com/no-title", from_epoch(1786195964))
     empty_url = Article("虎嗅", "有标题", "", from_epoch(1786195964))
@@ -980,3 +989,80 @@ def test_repair_missing_titles_is_in_place_and_idempotent(monkeypatch):
     assert first["updated"] == 1 and first["failed"] == 0 and first["blank_after"] == 0
     assert second["updated"] == 0 and second["blank_before"] == 0
     assert len(calls) == 1
+
+
+def test_feishu_rejects_ordinary_title_field_as_primary():
+    client = object.__new__(FeishuBitable)
+    client.field_items = [
+        {"field_id": "primary", "field_name": "记录", "type": 1, "is_primary": True},
+        {"field_id": "ordinary", "field_name": "标题", "type": 1, "is_primary": False},
+        *[
+            {"field_id": name, "field_name": name, "type": spec["type"], "is_primary": False}
+            for name, spec in FeishuBitable.required_fields.items()
+        ],
+        {"field_id": "url", "field_name": "来源网站", "type": 15, "is_primary": False},
+    ]
+    client._refresh_field_state()
+    try:
+        client._validate_required_fields()
+    except RuntimeError as exc:
+        assert "首列主字段" in str(exc)
+    else:
+        raise AssertionError("普通同名字段不得冒充飞书主字段")
+
+
+def test_prepare_primary_title_migration_preserves_source_and_renames_primary(monkeypatch):
+    client = object.__new__(FeishuBitable)
+    client.field_items = [
+        {"field_id": "primary", "field_name": "记录", "type": 1, "is_primary": True},
+        {"field_id": "ordinary", "field_name": "标题", "type": 1, "is_primary": False},
+        *[
+            {"field_id": name, "field_name": name, "type": spec["type"], "is_primary": False}
+            for name, spec in FeishuBitable.required_fields.items()
+        ],
+        {"field_id": "url", "field_name": "来源网站", "type": 15, "is_primary": False},
+    ]
+    client._refresh_field_state()
+    calls = []
+
+    def rename(field, new_name):
+        calls.append((field["field_id"], new_name))
+        for item in client.field_items:
+            if item["field_id"] == field["field_id"]:
+                item["field_name"] = new_name
+        client._refresh_field_state()
+
+    monkeypatch.setattr(client, "rename_field", rename)
+    result = client.prepare_primary_title_migration()
+    assert calls == [("ordinary", "标题_恢复源"), ("primary", "标题")]
+    assert result["backup_field_name"] == "标题_恢复源"
+    assert client.primary_field["field_id"] == "primary"
+
+
+def test_migrate_titles_to_primary_only_fills_blanks_and_is_idempotent(monkeypatch):
+    client = object.__new__(FeishuBitable)
+    client.app_token = "app"
+    client.table_id = "table"
+    client.primary_field = dict(FeishuBitable.primary_title_spec)
+    before = [
+        {"record_id": "r1", "fields": {"标题": "", "标题_恢复源": "标题一", "来源网站": "https://a/1", "核心干货": "甲"}},
+        {"record_id": "r2", "fields": {"标题": "已有标题", "标题_恢复源": "不可覆盖", "来源网站": "https://a/2", "核心干货": "乙"}},
+    ]
+    after = [
+        {"record_id": "r1", "fields": {"标题": "标题一", "标题_恢复源": "标题一", "来源网站": "https://a/1", "核心干货": "甲"}},
+        before[1],
+    ]
+    reads = iter([before, after, after, after])
+    monkeypatch.setattr(client, "list_records", lambda: next(reads))
+    calls = []
+    monkeypatch.setattr(
+        client,
+        "_api",
+        lambda method, path, **kwargs: calls.append(kwargs["json"]) or {"data": {"records": [{"record_id": "r1"}]}},
+    )
+    first = client.migrate_titles_to_primary(backup_field_name="标题_恢复源")
+    second = client.migrate_titles_to_primary(backup_field_name="标题_恢复源")
+    assert first["copied_from_backup"] == 1 and first["updated"] == 1
+    assert first["failed"] == 0 and first["non_title_fields_changed"] == 0
+    assert second["updated"] == 0
+    assert calls == [{"records": [{"record_id": "r1", "fields": {"标题": "标题一"}}]}]

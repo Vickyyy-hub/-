@@ -15,8 +15,8 @@ class FeishuBitable:
     token_refresh_margin_seconds = 600
     batch_size = 50
     token_error_codes = {99991661, 99991663, 99991668}
+    primary_title_spec = {"field_name": "标题", "type": 1, "is_primary": True}
     required_fields = {
-        "标题": {"field_name": "标题", "type": 1},
         "核心干货": {"field_name": "核心干货", "type": 1},
         "来源名称": {"field_name": "来源名称", "type": 3},
         "发布日期": {"field_name": "发布日期", "type": 5, "property": {"date_formatter": "yyyy-MM-dd"}},
@@ -24,7 +24,13 @@ class FeishuBitable:
         "记录状态": {"field_name": "记录状态", "type": 3},
     }
 
-    def __init__(self, http: HttpClient, *, read_only: bool = False) -> None:
+    def __init__(
+        self,
+        http: HttpClient,
+        *,
+        read_only: bool = False,
+        allow_title_migration: bool = False,
+    ) -> None:
         self.http = http
         self.app_id = os.environ.get("FEISHU_APP_ID", "")
         self.app_secret = os.environ.get("FEISHU_APP_SECRET", "")
@@ -36,8 +42,11 @@ class FeishuBitable:
         self.token_expires_at = 0.0
         self.headers = {"Content-Type": "application/json"}
         self._refresh_token()
-        self.field_types = self._field_types()
-        if read_only:
+        self.field_items = self._list_fields()
+        self._refresh_field_state()
+        if allow_title_migration:
+            self.ensure_fields(validate_identity=False)
+        elif read_only:
             self._validate_required_fields()
         else:
             self.ensure_fields()
@@ -117,18 +126,43 @@ class FeishuBitable:
             raise RuntimeError(f"飞书API失败：{self._response_detail(response, payload)}")
         raise RuntimeError("飞书API失败：凭证刷新后仍无法调用")
 
-    def _field_types(self) -> dict[str, int]:
+    def _list_fields(self) -> list[dict[str, Any]]:
         path = f"/bitable/v1/apps/{self.app_token}/tables/{self.table_id}/fields"
-        payload = self._api("GET", path, params={"page_size": 100})
-        return {item["field_name"]: int(item["type"]) for item in payload["data"].get("items", [])}
+        items: list[dict[str, Any]] = []
+        page_token = ""
+        while True:
+            params: dict[str, Any] = {"page_size": 100}
+            if page_token:
+                params["page_token"] = page_token
+            data = self._api("GET", path, params=params)["data"]
+            items.extend(data.get("items", []))
+            if not data.get("has_more"):
+                break
+            page_token = str(data.get("page_token") or "")
+            if not page_token:
+                raise RuntimeError("飞书字段分页缺少 page_token")
+        return items
 
-    def ensure_fields(self) -> None:
+    def _refresh_field_state(self) -> None:
+        self.field_types = {
+            str(item["field_name"]): int(item["type"])
+            for item in self.field_items
+        }
+        primary = [item for item in self.field_items if item.get("is_primary") is True]
+        self.primary_field = primary[0] if len(primary) == 1 else None
+
+    def refresh_fields(self) -> None:
+        self.field_items = self._list_fields()
+        self._refresh_field_state()
+
+    def ensure_fields(self, *, validate_identity: bool = True) -> None:
         path = f"/bitable/v1/apps/{self.app_token}/tables/{self.table_id}/fields"
         for name, spec in self.required_fields.items():
             if name not in self.field_types:
                 self._api("POST", path, json=spec)
-        self.field_types = self._field_types()
-        self._validate_required_fields()
+        self.refresh_fields()
+        if validate_identity:
+            self._validate_required_fields()
 
     def _validate_required_fields(self) -> None:
         missing = sorted(set(self.required_fields) - set(self.field_types))
@@ -141,6 +175,15 @@ class FeishuBitable:
         }
         if wrong:
             raise RuntimeError(f"飞书字段类型不匹配：{wrong}")
+        primary = [item for item in self.field_items if item.get("is_primary") is True]
+        if len(primary) != 1:
+            raise RuntimeError(f"飞书必须且只能有一个主字段，当前识别到 {len(primary)} 个")
+        primary_name = str(primary[0].get("field_name") or "")
+        primary_type = int(primary[0].get("type") or 0)
+        if primary_name != "标题" or primary_type != 1:
+            raise RuntimeError(
+                f"飞书首列主字段必须为文本字段‘标题’，当前为 {primary_name!r}（类型 {primary_type}）"
+            )
         source_type = self.field_types.get("来源网站")
         if source_type not in {1, 15}:
             if source_type is None:
@@ -153,6 +196,12 @@ class FeishuBitable:
             "readable": True,
             "record_count": len(records),
             "required_fields": sorted(self.required_fields),
+            "primary_field": {
+                "field_id": str((self.primary_field or {}).get("field_id") or ""),
+                "field_name": str((self.primary_field or {}).get("field_name") or ""),
+                "type": int((self.primary_field or {}).get("type") or 0),
+                "is_primary": bool((self.primary_field or {}).get("is_primary")),
+            },
         }
 
     @staticmethod
@@ -220,6 +269,7 @@ class FeishuBitable:
             raise ValueError(f"文章标题为空，拒绝写入：{url or '<无链接>'}")
         if not url:
             raise ValueError(f"文章来源链接为空，拒绝写入：{title}")
+        self._validate_primary_title_field()
         missing_identity_fields = {"标题", "来源网站"} - set(self.field_types)
         if missing_identity_fields:
             raise RuntimeError(f"飞书缺少身份字段，拒绝静默丢弃：{sorted(missing_identity_fields)}")
@@ -236,6 +286,69 @@ class FeishuBitable:
             "记录状态": article.record_status or "主稿",
         }
         return {name: value for name, value in fields.items() if name in self.field_types}
+
+    def _validate_primary_title_field(self) -> None:
+        primary = self.primary_field or {}
+        if (
+            primary.get("is_primary") is not True
+            or str(primary.get("field_name") or "") != "标题"
+            or int(primary.get("type") or 0) != 1
+        ):
+            raise RuntimeError("飞书‘标题’不是首列文本主字段，拒绝读写并生成完成标记")
+
+    def rename_field(self, field: dict[str, Any], new_name: str) -> None:
+        field_id = str(field.get("field_id") or "")
+        if not field_id:
+            raise RuntimeError("飞书字段缺少 field_id，无法安全重命名")
+        payload: dict[str, Any] = {
+            "field_name": new_name,
+            "type": int(field.get("type") or 0),
+        }
+        if field.get("property") is not None:
+            payload["property"] = field["property"]
+        path = f"/bitable/v1/apps/{self.app_token}/tables/{self.table_id}/fields/{field_id}"
+        self._api("PUT", path, json=payload)
+        self.refresh_fields()
+
+    def prepare_primary_title_migration(self) -> dict[str, Any]:
+        """Rename the visible primary field and preserve any ordinary recovered-title field."""
+        primary = self.primary_field
+        if not primary:
+            raise RuntimeError("未能唯一识别飞书主字段，停止标题迁移")
+        ordinary_title = next(
+            (
+                item for item in self.field_items
+                if item.get("field_name") == "标题" and item.get("is_primary") is not True
+            ),
+            None,
+        )
+        backup_name = next(
+            (
+                str(item.get("field_name") or "")
+                for item in self.field_items
+                if str(item.get("field_name") or "").startswith("标题_恢复源")
+                and item.get("is_primary") is not True
+            ),
+            "",
+        )
+        if ordinary_title:
+            existing_names = {str(item.get("field_name") or "") for item in self.field_items}
+            backup_name = "标题_恢复源"
+            suffix = 2
+            while backup_name in existing_names:
+                backup_name = f"标题_恢复源_{suffix}"
+                suffix += 1
+            self.rename_field(ordinary_title, backup_name)
+            primary = self.primary_field
+        if str((primary or {}).get("field_name") or "") != "标题":
+            self.rename_field(primary or {}, "标题")
+        self._validate_required_fields()
+        return {
+            "backup_field_name": backup_name,
+            "primary_field_id": str((self.primary_field or {}).get("field_id") or ""),
+            "primary_field_name": str((self.primary_field or {}).get("field_name") or ""),
+            "primary_field_type": int((self.primary_field or {}).get("type") or 0),
+        }
 
     def write(self, articles: Iterable[Article]) -> tuple[int, int]:
         records = [{"fields": self.record_fields(article)} for article in articles]
@@ -435,6 +548,106 @@ class FeishuBitable:
             "failed": failed,
             "blank_after": len(remaining),
             "unresolved": unresolved,
+            "ai_calls": 0,
+            "created": 0,
+            "deleted": 0,
+        }
+
+    def migrate_titles_to_primary(
+        self,
+        *,
+        backup_field_name: str = "",
+        titles_by_url: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
+        """Fill only blank primary titles from the preserved source or verified URL titles."""
+        self._validate_primary_title_field()
+        titles_by_url = titles_by_url or {}
+        before_records = self.list_records()
+        before_by_id = {str(item.get("record_id") or ""): item for item in before_records}
+        updates: list[dict[str, Any]] = []
+        update_sources: dict[str, str] = {}
+        unresolved: list[dict[str, str]] = []
+        for record in before_records:
+            fields = record.get("fields") or {}
+            record_id = str(record.get("record_id") or "")
+            url = self._extract_text(fields.get("来源网站")).strip()
+            primary_title = clean_text(self._extract_text(fields.get("标题")))
+            if primary_title or not url or not record_id:
+                continue
+            backup_title = clean_text(self._extract_text(fields.get(backup_field_name))) if backup_field_name else ""
+            verified_title = clean_text(titles_by_url.get(normalize_url(url), ""))
+            title = backup_title or verified_title
+            if not title:
+                unresolved.append({"record_id": record_id, "url": url})
+                continue
+            updates.append({"record_id": record_id, "fields": {"标题": title[:1000]}})
+            update_sources[record_id] = "backup" if backup_title else "verified_url"
+
+        updated = 0
+        api_failed = 0
+        path = f"/bitable/v1/apps/{self.app_token}/tables/{self.table_id}/records/batch_update"
+        for index in range(0, len(updates), self.batch_size):
+            batch = updates[index : index + self.batch_size]
+            try:
+                payload = self._api("POST", path, json={"records": batch})
+                updated += len(payload["data"].get("records", []))
+            except Exception as exc:
+                print(f"[飞书] 主字段标题迁移失败（{len(batch)} 条）：{exc}")
+                api_failed += len(batch)
+
+        after_records = self.list_records()
+        after_by_id = {str(item.get("record_id") or ""): item for item in after_records}
+        verification_failed = 0
+        for item in updates:
+            record_id = item["record_id"]
+            expected = clean_text(self._extract_text(item["fields"].get("标题")))
+            actual = clean_text(
+                self._extract_text((after_by_id.get(record_id, {}).get("fields") or {}).get("标题"))
+            )
+            if actual != expected:
+                verification_failed += 1
+        non_title_fields_changed = 0
+        ignored = {"标题"}
+        if backup_field_name:
+            ignored.add(backup_field_name)
+        for record_id, before in before_by_id.items():
+            after = after_by_id.get(record_id)
+            if not after:
+                non_title_fields_changed += 1
+                continue
+            left = {key: value for key, value in (before.get("fields") or {}).items() if key not in ignored}
+            right = {key: value for key, value in (after.get("fields") or {}).items() if key not in ignored}
+            if left != right:
+                non_title_fields_changed += 1
+        blank_after = [
+            record for record in after_records
+            if self._extract_text((record.get("fields") or {}).get("来源网站")).strip()
+            and not clean_text(self._extract_text((record.get("fields") or {}).get("标题")))
+        ]
+        failed = max(api_failed, verification_failed)
+        return {
+            "record_count_before": len(before_records),
+            "record_count_after": len(after_records),
+            "blank_primary_before": sum(
+                1 for record in before_records
+                if self._extract_text((record.get("fields") or {}).get("来源网站")).strip()
+                and not clean_text(self._extract_text((record.get("fields") or {}).get("标题")))
+            ),
+            "copied_from_backup": sum(1 for source in update_sources.values() if source == "backup"),
+            "recovered_from_verified_url": sum(1 for source in update_sources.values() if source == "verified_url"),
+            "updated": max(0, len(updates) - verification_failed),
+            "api_failed": api_failed,
+            "verification_failed": verification_failed,
+            "failed": failed,
+            "blank_primary_after": len(blank_after),
+            "unresolved": [
+                {
+                    "record_id": str(record.get("record_id") or ""),
+                    "url": self._extract_text((record.get("fields") or {}).get("来源网站")).strip(),
+                }
+                for record in blank_after
+            ],
+            "non_title_fields_changed": non_title_fields_changed,
             "ai_calls": 0,
             "created": 0,
             "deleted": 0,
